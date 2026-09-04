@@ -19,7 +19,6 @@ interface EditorProps {
 
 const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
 
-const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
 
 export default function Editor({ onNavigate, videoFile, apiKey, awsAccessKeyId, awsSecretAccessKey, awsRegion, awsS3Bucket, workflow, voice, model }: EditorProps) {
   const [lines, setLines] = useState<SubtitleLine[]>([]);
@@ -152,7 +151,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
         headers['x-aws-s3-bucket'] = awsS3Bucket;
       }
 
-      const startRes = await fetch(`${API_URL}/api/transcribe/start', {
+        const startRes = await fetch(`${API_URL}/api/transcribe/start`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ 
@@ -255,7 +254,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
         return next;
       });
 
-      const res = await fetch(`${API_URL}/api/tts', {
+        const res = await fetch(`${API_URL}/api/tts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, voice })
@@ -500,7 +499,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
       
       formData.append('metadata', JSON.stringify(audioMetadata));
       
-      const res = await fetch(`${API_URL}/api/export-video', {
+        const res = await fetch(`${API_URL}/api/export-video`, {
          method: 'POST',
          body: formData
       });
