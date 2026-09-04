@@ -839,7 +839,7 @@ const hash = crypto.createHash('sha256');
     
     const jobId = Date.now().toString();
     exportCache.set(exportKey, jobId);
-    const outputVideoPath = path.join(os.tmpdir(), `output_${jobId}.mp4`);
+    const outputVideoPath = path.join(process.cwd(), "outputs", `output_${jobId}.mp4`);
     
     exportJobs.set(jobId, { status: 'processing' });
     res.json({ jobId });
