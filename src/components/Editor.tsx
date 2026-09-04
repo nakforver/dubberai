@@ -17,7 +17,7 @@ interface EditorProps {
   model: string;
 }
 
-const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+const API_URL = (import.meta.env.VITE_API_URL || 'https://translatevideo-api.wechatfree011-375.workers.dev').replace(/\/$/, '');
 
 
 export default function Editor({ onNavigate, videoFile, apiKey, awsAccessKeyId, awsSecretAccessKey, awsRegion, awsS3Bucket, workflow, voice, model }: EditorProps) {
