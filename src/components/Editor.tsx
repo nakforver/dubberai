@@ -227,8 +227,9 @@ const videoRef = useRef<HTMLVideoElement>(null);
         }
       }
     } catch (err: any) {
-      console.error(err);
-      setTranscribeError(err.message);
+      console.error('TRANSCRIBE ERROR:', err);
+      setTranscribeError(err?.message || 'Transcribe បរាជ័យ');
+      throw err;
     } finally {
       // no interval
       setTimeout(() => {
@@ -574,8 +575,11 @@ const videoRef = useRef<HTMLVideoElement>(null);
       }
       
     } catch (err: any) {
-      console.error(err);
-      setTranscribeError(err.message || "មានបញ្ហាក្នុងការនាំចេញឯកសារ (Export Failed)");
+      console.error('EXPORT ERROR:', err);
+      setTranscribeError(
+        err?.message || 'មានបញ្ហាក្នុងការនាំចេញឯកសារ (Export Failed)'
+      );
+      throw err;
     } finally {
       // clearInterval(progressInterval);
       setTimeout(() => setIsExporting(false), 500);
