@@ -17,6 +17,10 @@ interface EditorProps {
   model: string;
 }
 
+const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+
+const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+
 export default function Editor({ onNavigate, videoFile, apiKey, awsAccessKeyId, awsSecretAccessKey, awsRegion, awsS3Bucket, workflow, voice, model }: EditorProps) {
   const [lines, setLines] = useState<SubtitleLine[]>([]);
 
@@ -107,7 +111,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
         let retries = 0;
         while (retries < 20) {
           try {
-            chunkRes = await fetch(`/api/upload-chunk?fileId=${fileId}&chunkIndex=${i}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
+            chunkRes = await fetch(`${API_URL}/api/upload-chunk?fileId=${fileId}&chunkIndex=${i}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
             if (chunkRes.ok) break;
           } catch (e) {
             console.warn(`Chunk ${i} upload failed (attempt ${retries + 1}), retrying...`);
@@ -148,7 +152,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
         headers['x-aws-s3-bucket'] = awsS3Bucket;
       }
 
-      const startRes = await fetch('/api/transcribe/start', {
+      const startRes = await fetch(`${API_URL}/api/transcribe/start', {
         method: 'POST',
         headers,
         body: JSON.stringify({ 
@@ -178,7 +182,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
         await new Promise(r => setTimeout(r, 2000));
         let statusRes;
         try {
-          statusRes = await fetch(`/api/transcribe/status?jobId=${jobId}`);
+          statusRes = await fetch(`${API_URL}/api/transcribe/status?jobId=${jobId}`);
           statusRetries = 0; // reset on success
         } catch (e) {
           console.error('Status check failed, retrying...', e);
@@ -251,7 +255,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
         return next;
       });
 
-      const res = await fetch('/api/tts', {
+      const res = await fetch(`${API_URL}/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, voice })
@@ -464,7 +468,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
            let chunkRes;
            while (retries < 10) {
              try {
-               chunkRes = await fetch(`/api/upload-chunk?fileId=${videoFileId}&chunkIndex=${i}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
+               chunkRes = await fetch(`${API_URL}/api/upload-chunk?fileId=${videoFileId}&chunkIndex=${i}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
                if (chunkRes.ok) break;
              } catch (e) {}
              retries++;
@@ -496,7 +500,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
       
       formData.append('metadata', JSON.stringify(audioMetadata));
       
-      const res = await fetch('/api/export-video', {
+      const res = await fetch(`${API_URL}/api/export-video', {
          method: 'POST',
          body: formData
       });
@@ -518,7 +522,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
         await new Promise(r => setTimeout(r, 1000));
         let statusRes;
         try {
-          statusRes = await fetch(`/api/export/status/${jobId}`);
+          statusRes = await fetch(`${API_URL}/api/export/status/${jobId}`);
         } catch (e) {
           pollFailCount++;
           if (pollFailCount > 5) throw new Error('ដាច់ការភ្ជាប់ជាមួយម៉ាស៊ីនមេ (Network Error)');
