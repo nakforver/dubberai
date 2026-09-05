@@ -552,7 +552,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
 
            // Exported video replaces the original video in the main preview
            const version = Date.now();
-           const exportedUrl = `/api/export/download/${jobId}?filename=${encodeURIComponent(baseName + '_khmer.mp4')}&v=${version}`;
+           const exportedUrl = `${API_URL}/api/export/download/${jobId}?filename=${encodeURIComponent(baseName + '_khmer.mp4')}&v=${version}`;
 
            setVideoUrl(exportedUrl);
            setDownloadUrl(exportedUrl);
