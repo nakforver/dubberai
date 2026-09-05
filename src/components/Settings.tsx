@@ -14,6 +14,8 @@ interface SettingsProps {
   setAwsRegion: (val: string) => void;
   awsS3Bucket: string;
   setAwsS3Bucket: (val: string) => void;
+  workflow: string;
+  setWorkflow: (w: string) => void;
   model: string;
   setModel: (model: string) => void;
   voice: 'Piseth' | 'Sreymom';

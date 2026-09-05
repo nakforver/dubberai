@@ -541,20 +541,10 @@ const videoRef = useRef<HTMLVideoElement>(null);
         const statusData = await statusRes.json();
         
         if (typeof statusData.progress === 'number') {
-
-        
           // Export progress must NEVER move backwards.
-
-        
           setExportProgress(prev =>
-
-        
             Math.max(prev, Math.min(100, statusData.progress))
-
-        
           );
-
-        
         }
         
         if (statusData.status === 'completed') {

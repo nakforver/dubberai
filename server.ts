@@ -15,8 +15,18 @@ import util from 'util';
 
 const execAsync = util.promisify(exec);
 
+function sha256File(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
 
-function logFfmpegDiagnostic(stepName, command, error, stderr, stdout) {
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+function logFfmpegDiagnostic(stepName: string, command: string, error: any, stderr: any, stdout: any) {
   const timestamp = new Date().toISOString();
   console.error(`\n[FFMPEG DIAGNOSTIC LOG - ${timestamp}]`);
   console.error(`STEP: ${stepName}`);
@@ -65,6 +75,26 @@ const jobs = new Map<string, { status: string, progress: number, lines?: any[], 
 const exportJobs = new Map<string, { status: string; error?: string; path?: string; progress?: number; }>();
 const exportCache = new Map<string, string>();
 
+// Cleanup old exported files every 30 minutes
+setInterval(() => {
+  const outputsDir = path.join(process.cwd(), "outputs");
+  if (!fs.existsSync(outputsDir)) return;
+  const now = Date.now();
+  for (const [jobId, job] of exportJobs.entries()) {
+    if ((job.status === 'completed' || job.status === 'error') && job.path) {
+      try {
+        const stat = fs.statSync(job.path);
+        if (now - stat.mtimeMs > 30 * 60 * 1000) {
+          fs.unlinkSync(job.path);
+          exportJobs.delete(jobId);
+        }
+      } catch (e) {
+        // File already gone or inaccessible
+      }
+    }
+  }
+}, 30 * 60 * 1000);
+
 
 // ============================================================
 // SHARED GEMINI SUBTITLE TRANSLATOR
@@ -78,7 +108,8 @@ const exportCache = new Map<string, string>();
 
 async function translateSubtitleLinesToKhmer(
   sourceLines: any[],
-  geminiModel: string
+  geminiModel: string,
+  aiClient: GoogleGenAI
 ): Promise<any[]> {
   if (!Array.isArray(sourceLines) || sourceLines.length === 0) {
     throw new Error('No source subtitle lines available for translation.');
@@ -101,7 +132,7 @@ async function translateSubtitleLinesToKhmer(
     while (!success && retries < 3) {
       try {
         const response =
-          await currentAi.models.generateContent({
+          await aiClient.models.generateContent({
             model: geminiModel,
             contents: [{
               role: 'user',
@@ -770,42 +801,9 @@ app.post('/api/export-video', upload.any(), async (req, res) => {
     const files = req.files as Express.Multer.File[] || [];
     const srtFile = files.find(f => f.fieldname === 'srt');
     
-    // Hash inputs for caching
     const metadataStr = req.body.metadata || '';
     const videoFileId = req.body.videoFileId || '';
     const srtContent = srtFile && fs.existsSync(srtFile.path) ? fs.readFileSync(srtFile.path, 'utf8') : '';
-    
-const hash = crypto.createHash('sha256');
-    hash.update(videoFileId);
-    hash.update(metadataStr);
-    hash.update(srtContent);
-    // Include audio file sizes to detect if an audio file was regenerated
-    const audioFilesForHash = files.filter(f => f.fieldname.startsWith('audio_'));
-    audioFilesForHash.sort((a, b) => a.fieldname.localeCompare(b.fieldname));
-    for (const af of audioFilesForHash) {
-        if (fs.existsSync(af.path)) {
-            hash.update(fs.statSync(af.path).size.toString());
-        }
-    }
-    const exportKey = hash.digest('hex');
-    
-    if (exportCache.has(exportKey)) {
-        const existingJobId = exportCache.get(exportKey);
-        const job = exportJobs.get(existingJobId!);
-        if (job && (job.status === 'completed' || job.status === 'processing') && job.path && fs.existsSync(job.path)) {
-            // Cleanup incoming files since we are using cache
-            files.forEach(f => {
-              try { fs.unlinkSync(f.path); } catch (e) {}
-            });
-            // Cleanup incoming chunks
-            const videoTotalChunks = parseInt(req.body.videoTotalChunks || '0', 10);
-            for (let i = 0; i < videoTotalChunks; i++) {
-              const chunkPath = path.join(os.tmpdir(), `upload_${videoFileId}_part_${i}`);
-              if (fs.existsSync(chunkPath)) fs.unlinkSync(chunkPath);
-            }
-            return res.json({ jobId: existingJobId, cached: true });
-        }
-    }
     let videoPath = '';
     const videoTotalChunks = parseInt(req.body.videoTotalChunks || '0', 10);
     
@@ -831,6 +829,38 @@ const hash = crypto.createHash('sha256');
         throw new Error('Missing video file');
       }
     }
+
+    // Hash the actual direct-uploaded or reconstructed video before cache lookup.
+    const videoContentHash = await sha256File(videoPath);
+    const hash = crypto.createHash('sha256');
+    hash.update(videoFileId);
+    hash.update(videoContentHash);
+    hash.update(metadataStr);
+    hash.update(srtContent);
+    // Include audio file sizes to detect if an audio file was regenerated
+    const audioFilesForHash = files.filter(f => f.fieldname.startsWith('audio_'));
+    audioFilesForHash.sort((a, b) => a.fieldname.localeCompare(b.fieldname));
+    for (const af of audioFilesForHash) {
+      if (fs.existsSync(af.path)) {
+        hash.update(fs.statSync(af.path).size.toString());
+      }
+    }
+    const exportKey = hash.digest('hex');
+
+    if (exportCache.has(exportKey)) {
+      const existingJobId = exportCache.get(exportKey);
+      const job = exportJobs.get(existingJobId!);
+      if (job && (job.status === 'completed' || job.status === 'processing') && job.path && fs.existsSync(job.path)) {
+        // Cleanup incoming files since we are using cache.
+        files.forEach(f => {
+          try { fs.unlinkSync(f.path); } catch (e) {}
+        });
+        if (videoFileId && fs.existsSync(videoPath)) {
+          try { fs.unlinkSync(videoPath); } catch (e) {}
+        }
+        return res.json({ jobId: existingJobId, cached: true });
+      }
+    }
     
     let audioMetadata: any[] = [];
     if (metadataStr) {
@@ -839,7 +869,11 @@ const hash = crypto.createHash('sha256');
     
     const jobId = Date.now().toString();
     exportCache.set(exportKey, jobId);
-    const outputVideoPath = path.join(process.cwd(), "outputs", `output_${jobId}.mp4`);
+    const outputsDir = path.join(process.cwd(), "outputs");
+    if (!fs.existsSync(outputsDir)) {
+      fs.mkdirSync(outputsDir, { recursive: true });
+    }
+    const outputVideoPath = path.join(outputsDir, `output_${jobId}.mp4`);
     
     exportJobs.set(jobId, { status: 'processing' });
     res.json({ jobId });
@@ -860,6 +894,48 @@ const hash = crypto.createHash('sha256');
                 let finalMapA = '';
         const tempMixedAudio = path.join(os.tmpdir(), `mixed_${jobId}.m4a`);
         const audioFiles = files.filter(f => f.fieldname.startsWith('audio_') && fs.statSync(f.path).size > 100);
+
+        const parseTtsStartDelayMs = (start: unknown, audioKey: string): number => {
+          if (typeof start !== 'string') {
+            throw new Error(`Invalid TTS start timestamp for ${audioKey}: expected a string`);
+          }
+
+          const parts = start.trim().split(':');
+          let totalSeconds: number;
+
+          if (parts.length === 2) {
+            const [minutes, seconds] = parts;
+            if (!/^\d+$/.test(minutes) || !/^\d{1,2}(?:[.,]\d+)?$/.test(seconds)) {
+              throw new Error(`Invalid TTS start timestamp for ${audioKey}: ${start}`);
+            }
+            const minutesValue = Number(minutes);
+            const secondsValue = Number(seconds.replace(',', '.'));
+            if (!Number.isFinite(minutesValue) || !Number.isFinite(secondsValue) || secondsValue >= 60) {
+              throw new Error(`Invalid TTS start timestamp for ${audioKey}: ${start}`);
+            }
+            totalSeconds = minutesValue * 60 + secondsValue;
+          } else if (parts.length === 3) {
+            const [hours, minutes, seconds] = parts;
+            if (!/^\d+$/.test(hours) || !/^\d{1,2}$/.test(minutes) || !/^\d{1,2}(?:[.,]\d+)?$/.test(seconds)) {
+              throw new Error(`Invalid TTS start timestamp for ${audioKey}: ${start}`);
+            }
+            const hoursValue = Number(hours);
+            const minutesValue = Number(minutes);
+            const secondsValue = Number(seconds.replace(',', '.'));
+            if (!Number.isFinite(hoursValue) || !Number.isFinite(minutesValue) || !Number.isFinite(secondsValue) || minutesValue >= 60 || secondsValue >= 60) {
+              throw new Error(`Invalid TTS start timestamp for ${audioKey}: ${start}`);
+            }
+            totalSeconds = hoursValue * 3600 + minutesValue * 60 + secondsValue;
+          } else {
+            throw new Error(`Invalid TTS start timestamp for ${audioKey}: ${start}`);
+          }
+
+          if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+            throw new Error(`Invalid TTS start timestamp for ${audioKey}: ${start}`);
+          }
+
+          return Math.round(totalSeconds * 1000);
+        };
         
         // STEP 1: Mix audio if needed
         if (audioFiles.length > 0) {
@@ -880,15 +956,8 @@ const hash = crypto.createHash('sha256');
               const af = audioFiles[i];
               const meta = audioMetadata.find(m => m.key === af.fieldname);
               let delayMs = 0;
-              if (meta && meta.start) {
-                const parts = meta.start.split(':');
-                let totalSeconds = 0;
-                if (parts.length === 3) {
-                   totalSeconds = parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseFloat(parts[2].replace(',', '.'));
-                } else if (parts.length === 2) {
-                   totalSeconds = parseInt(parts[0]) * 60 + parseFloat(parts[1].replace(',', '.'));
-                }
-                delayMs = Math.round(totalSeconds * 1000);
+              if (meta) {
+                delayMs = parseTtsStartDelayMs(meta.start, af.fieldname);
               }
               const inputIndex = hasOriginalAudio ? i + 1 : i;
               audioFilter += `[${inputIndex}:a]adelay=${delayMs}|${delayMs}[a${inputIndex}]; `;
@@ -913,7 +982,7 @@ const hash = crypto.createHash('sha256');
                throw new Error('FFmpeg mix error: ' + (e.stderr || e.message).substring(0, 500));
            }
            
-           finalMapA = hasOriginalAudio ? '1:a' : '0:a';
+           finalMapA = '1:a';
         } else if (hasOriginalAudio) {
            finalMapA = '0:a';
         }
@@ -1025,7 +1094,9 @@ let mapV = '0:v';
                     });
                     resolve(true);
                 } else {
-                    reject(new Error('FFmpeg exited with code ' + code));
+                    const error = new Error('FFmpeg exited with code ' + code + (ffmpegOutputBuffer ? `: ${ffmpegOutputBuffer}` : ''));
+                    (error as any).stderr = ffmpegOutputBuffer;
+                    reject(error);
                 }
             });
 
@@ -1052,7 +1123,9 @@ let mapV = '0:v';
         
       } catch (err: any) {
         logFfmpegDiagnostic('ffmpeg (video export or overall failure)', currentCmd, err, err.stderr, err.stdout);
-        exportJobs.set(jobId, { status: 'error', error: `FFMPEG_ERROR: ${err.stderr ? err.stderr.toString().substring(0, 200) : err.message}` });
+        const errorDetail = err.stderr ? err.stderr.toString().slice(-10000) : err.message;
+        exportJobs.set(jobId, { status: 'error', error: `FFMPEG_ERROR: ${errorDetail}` });
+        exportCache.delete(exportKey);
         
         // Try cleanup
         files.forEach(f => {
