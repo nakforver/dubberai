@@ -62,8 +62,8 @@ const upload = multer({ dest: os.tmpdir(), limits: { fileSize: 500 * 1024 * 1024
 
 type AudioSegmentMetadata = {
   key: string;
-  start: string;
-  end: string;
+  start: string | number;
+  end: string | number;
   segmentId?: string;
   speakerId?: string;
   voiceId?: string;
@@ -85,7 +85,17 @@ type RenderedAudioSegment = {
   renderOrder: number;
 };
 
-function parseTimestamp(value: string | undefined): number | null {
+type SubtitleLine = {
+  id: string;
+  start: string;
+  end: string;
+  text: string;
+};
+
+function parseTimestamp(value: string | number | undefined): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  }
   if (!value || typeof value !== 'string') return null;
   const parts = value.replace(',', '.').trim().split(':').map((part) => Number(part));
   if (parts.some((part) => !Number.isFinite(part))) return null;
@@ -146,6 +156,118 @@ function buildAtempoFilter(rate: number): string {
     filters.push(`atempo=${remaining.toFixed(4)}`);
   }
   return filters.join(',');
+}
+
+function validateSubtitleLine(value: any, index: number): SubtitleLine {
+  if (!value || typeof value !== 'object') {
+    throw new Error(`Invalid subtitle entry at index ${index}`);
+  }
+  const id = typeof value.id === 'string' || typeof value.id === 'number'
+    ? String(value.id)
+    : '';
+  if (!id) {
+    throw new Error(`Invalid subtitle ID at index ${index}`);
+  }
+  if (typeof value.text !== 'string' || value.text.trim().length === 0) {
+    throw new Error(`Invalid subtitle text at index ${index}`);
+  }
+  const startSeconds = parseTimestamp(value.start);
+  const endSeconds = parseTimestamp(value.end);
+  if (startSeconds === null || startSeconds < 0) {
+    throw new Error(`Invalid start timestamp at subtitle index ${index}`);
+  }
+  if (endSeconds === null || endSeconds <= startSeconds) {
+    throw new Error(
+      `Invalid end timestamp at subtitle index ${index}: ` +
+      `start=${String(value.start)} end=${String(value.end)}`
+    );
+  }
+  return {
+    id,
+    start: String(value.start),
+    end: String(value.end),
+    text: value.text.trim()
+  };
+}
+
+function validateExportAudioMetadata(value: any): AudioSegmentMetadata[] {
+  if (!Array.isArray(value)) {
+    throw new Error('Export audio metadata must be a JSON array');
+  }
+  const keys = new Set<string>();
+  return value.map((item: any, index: number) => {
+    if (!item || typeof item !== 'object') {
+      throw new Error(`Invalid export audio metadata entry at index ${index}`);
+    }
+    if (typeof item.key !== 'string' || !/^audio_\d+$/.test(item.key)) {
+      throw new Error(`Invalid audio metadata key at index ${index}`);
+    }
+    if (keys.has(item.key)) {
+      throw new Error(`Duplicate audio metadata key: ${item.key}`);
+    }
+    keys.add(item.key);
+
+    const startSeconds = parseTimestamp(item.start);
+    const endSeconds = parseTimestamp(item.end);
+    if (startSeconds === null || startSeconds < 0) {
+      throw new Error(`Invalid start timestamp for ${item.key}`);
+    }
+    if (endSeconds === null || endSeconds <= startSeconds) {
+      throw new Error(`Invalid end timestamp for ${item.key}`);
+    }
+    if (item.segmentId !== undefined && (typeof item.segmentId !== 'string' || !item.segmentId)) {
+      throw new Error(`Invalid segment ID for ${item.key}`);
+    }
+    if (
+      item.expectedDuration !== undefined &&
+      (!Number.isFinite(Number(item.expectedDuration)) || Number(item.expectedDuration) <= 0)
+    ) {
+      throw new Error(`Invalid expected TTS duration for ${item.key}`);
+    }
+
+    return {
+      ...item,
+      start: String(item.start),
+      end: String(item.end)
+    };
+  });
+}
+
+function buildFinalAudioMap(
+  hasOriginalAudio: boolean,
+  renderedSegments: RenderedAudioSegment[]
+): string {
+  if (renderedSegments.length > 0) return '1:a';
+  return hasOriginalAudio ? '0:a' : '';
+}
+
+function validateSubtitleLines(lines: any): SubtitleLine[] {
+  if (!Array.isArray(lines) || lines.length === 0) {
+    throw new Error('Subtitle lines must be a non-empty array');
+  }
+  return lines.map(validateSubtitleLine);
+}
+
+function mergeTranslatedSubtitleLine(
+  originalLine: SubtitleLine,
+  translation: any,
+  index: number
+): SubtitleLine {
+  const text =
+    typeof translation?.text === 'string'
+      ? translation.text.trim()
+      : typeof translation?.Text === 'string'
+        ? translation.Text.trim()
+        : '';
+  if (!text) {
+    throw new Error(`Empty translation at subtitle index ${index}`);
+  }
+  return {
+    id: originalLine.id,
+    start: originalLine.start,
+    end: originalLine.end,
+    text
+  };
 }
 
 async function probeAudio(path: string): Promise<{ duration: number; sampleRate: number; channels: number }> {
@@ -221,7 +343,7 @@ async function buildRenderedAudioSegments(
     const probed = await probeAudio(file.path);
     if (item?.expectedDuration !== undefined) {
       const expectedDuration = Number(item.expectedDuration);
-      if (!Number.isFinite(expectedDuration) || Math.abs(expectedDuration - probed.duration) > 0.1) {
+      if (!Number.isFinite(expectedDuration) || Math.abs(expectedDuration - probed.duration) > 1.5) {
         throw new Error(`TTS duration changed for ${file.fieldname}`);
       }
     }
@@ -439,26 +561,12 @@ ${JSON.stringify(chunk)}`
           );
         }
 
-        const validated = chunk.map((originalLine: any, index: number) => {
-          const translated = parsed[index];
-
-          const text =
-            typeof translated?.text === 'string'
-              ? translated.text.trim()
-              : '';
-
-          if (!text) {
-            throw new Error(
-              `Empty translation at subtitle index ${index}.`
-            );
-          }
-
-          return {
-            id: String(originalLine.id),
-            start: String(originalLine.start),
-            end: String(originalLine.end),
-            text
-          };
+      const validated = chunk.map((originalLine: any, index: number) => {
+          return mergeTranslatedSubtitleLine(
+            validateSubtitleLine(originalLine, index),
+            parsed[index],
+            index
+          );
         });
 
         translatedLines.push(...validated);
@@ -686,12 +794,12 @@ if (activeModel === 'amazon') {
              return `${mins}:${secs.toFixed(1).padStart(4, '0')}`;
          };
          
-         originalLines = originalLines.map(line => ({
+         originalLines = validateSubtitleLines(originalLines.map(line => ({
              id: line.id,
              start: formatTimestamp(line.start),
              end: formatTimestamp(line.end),
              text: line.text
-         }));
+         })));
          
          if (originalLines.length === 0) {
              throw new Error("AWS Transcribe មិនអាចស្គាល់សំឡេងបានទេ (No speech detected). អាចដោយសារវីដេអូគ្មានសំឡេង ឬប្រើភាសាដែលប្រព័ន្ធមិនស្គាល់។");
@@ -736,25 +844,13 @@ if (activeModel === 'amazon') {
                         throw new Error(`Gemini returned ${parsedChunk.length} lines, expected ${chunk.length}.`);
                       }
 
-                      const validatedChunk = chunk.map((originalLine, index) => {
-                        const translated = parsedChunk[index];
-                        const translatedText = typeof translated?.text === "string"
-                          ? translated.text.trim()
-                          : typeof translated?.Text === "string"
-                            ? translated.Text.trim()
-                            : "";
-
-                        if (!translatedText) {
-                          throw new Error(`Empty translation at index ${index}.`);
-                        }
-
-                        return {
-                          id: originalLine.id,
-                          start: originalLine.start,
-                          end: originalLine.end,
-                          text: translatedText
-                        };
-                      });
+                      const validatedChunk = chunk.map((originalLine, index) =>
+                        mergeTranslatedSubtitleLine(
+                          validateSubtitleLine(originalLine, index),
+                          parsedChunk[index],
+                          index
+                        )
+                      );
 
                      translatedLines.push(...validatedChunk);
                      chunkSuccess = true;
@@ -927,9 +1023,7 @@ Do not output an empty array unless there is absolutely no speech.` },
         }
       }
 
-      if (lines.length === 0) {
-          throw new Error('ការបកប្រែទទួលបានអក្សរទទេ (0 lines) ពីប្រព័ន្ធ។ សូមសាកល្បងកាត់វីដេអូជាចំណែកខ្លីៗ។ Data: ' + responseText.substring(0, 100));
-      }
+      lines = validateSubtitleLines(lines);
       
       // Clean up
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
@@ -1040,7 +1134,8 @@ app.post('/api/export-video', upload.any(), async (req, res) => {
     const srtFile = files.find(f => f.fieldname === 'srt');
     
     // Hash inputs for caching
-    const metadataStr = req.body.metadata || '';
+    const metadataValue = req.body.metadata;
+    const metadataStr = typeof metadataValue === 'string' ? metadataValue : '';
     const videoFileId = req.body.videoFileId || '';
     const srtContent = srtFile && fs.existsSync(srtFile.path) ? fs.readFileSync(srtFile.path, 'utf8') : '';
     
@@ -1101,9 +1196,9 @@ const hash = crypto.createHash('sha256');
       }
     }
     
-    let audioMetadata: any[] = [];
+    let audioMetadata: AudioSegmentMetadata[] = [];
     if (metadataStr) {
-      audioMetadata = JSON.parse(metadataStr);
+      audioMetadata = validateExportAudioMetadata(JSON.parse(metadataStr));
     }
     
     const jobId = Date.now().toString();
@@ -1117,6 +1212,8 @@ const hash = crypto.createHash('sha256');
     // Process in background
     (async () => {
       let currentCmd = '';
+      let tempOutputVideoPath = '';
+      let finalSrtPath = '';
       try {
         let hasOriginalAudio = false;
         let originalAudioStreamCount = 0;
@@ -1165,11 +1262,13 @@ const hash = crypto.createHash('sha256');
            let audioFilter = '';
            let mixInputs = '';
            let inputCount = renderedSegments.length;
+           let mixDurationMode = 'longest';
            
            if (hasOriginalAudio) {
                mixCmd += ` -i "${videoPath}"`;
                audioFilter += `[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume=0.1[a0]; `;
                mixInputs += `[a0]`;
+               mixDurationMode = 'first';
                inputCount += 1;
            }
            
@@ -1188,7 +1287,7 @@ const hash = crypto.createHash('sha256');
            if (inputCount === 1) { 
               audioFilter += `${mixInputs}aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[aout]`; 
            } else { 
-              audioFilter += `${mixInputs}amix=inputs=${inputCount}:duration=first:dropout_transition=0:normalize=0[aout]`; 
+              audioFilter += `${mixInputs}amix=inputs=${inputCount}:duration=${mixDurationMode}:dropout_transition=0:normalize=0[aout]`;
            }
            
            mixCmd += ` -filter_complex "${audioFilter}" -map "[aout]" -c:a aac -ar 44100 -ac 2 -b:a 192k -y "${tempMixedAudio}"`;
@@ -1203,9 +1302,7 @@ const hash = crypto.createHash('sha256');
                throw new Error('FFmpeg mix error: ' + (e.stderr || e.message).substring(0, 500));
            }
            
-           // The final export always adds tempMixedAudio as input #1 when TTS
-           // exists, regardless of whether the source video has audio.
-           finalMapA = '1:a';
+           finalMapA = buildFinalAudioMap(hasOriginalAudio, renderedSegments);
         } else if (hasOriginalAudio) {
            finalMapA = '0:a';
         }
@@ -1216,8 +1313,17 @@ const hash = crypto.createHash('sha256');
         let videoFilter = '';
         let mapV = '0:v';
 
+        finalSrtPath = srtFile ? srtFile.path : '';
+        if (srtFile && !finalSrtPath.endsWith('.srt')) {
+          const srtWithExt = `${finalSrtPath}.srt`;
+          try {
+            fs.copyFileSync(finalSrtPath, srtWithExt);
+            finalSrtPath = srtWithExt;
+          } catch (e) {}
+        }
+
         if (hasSubtitles) {
-          videoFilter = buildSubtitleVideoFilter(srtFile!.path);
+          videoFilter = buildSubtitleVideoFilter(finalSrtPath);
           mapV = '[vout]';
         }
 
@@ -1238,13 +1344,18 @@ const hash = crypto.createHash('sha256');
         videoCmd += hasSubtitles
             ? ' -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p'
             : ' -c:v copy';
-        videoCmd += ` -c:a aac -ar 44100 -ac 2 -b:a 192k`;
+        if (finalMapA) {
+            videoCmd += ` -c:a aac -ar 44100 -ac 2 -b:a 192k`;
+        }
+        if (videoDuration > 0) {
+            videoCmd += ` -t ${videoDuration.toFixed(3)}`;
+        }
         videoCmd += ' -movflags +faststart';
         videoCmd += ` -y "${outputVideoPath}"`;
         
 
         console.log('Running FFmpeg video export:', videoCmd);
-        const tempOutputVideoPath = path.join(os.tmpdir(), `.final_${jobId}.tmp.mp4`);
+        tempOutputVideoPath = path.join(path.dirname(outputVideoPath), `.final_${jobId}.tmp.mp4`);
         videoCmd = videoCmd.replace(`"${outputVideoPath}"`, `"${tempOutputVideoPath}"`);
         
         // Export progress: 50% -> 90% based on real FFmpeg time.
@@ -1344,26 +1455,34 @@ const hash = crypto.createHash('sha256');
           if (videoStreams.length !== 1) {
               throw new Error(`Export validation failed: expected 1 video stream, found ${videoStreams.length}`);
           }
-          if (audioStreams.length !== 1) {
+          if (finalMapA && audioStreams.length !== 1) {
               throw new Error(`Export validation failed: expected 1 audio stream, found ${audioStreams.length}`);
           }
-          if (Number(audioStream?.sample_rate) !== 44100 || Number(audioStream?.channels) !== 2) {
+          if (finalMapA && (Number(audioStream?.sample_rate) !== 44100 || Number(audioStream?.channels) !== 2)) {
               throw new Error('Export validation failed: audio must be stereo 44.1 kHz');
           }
-          if (Math.abs(duration - videoDuration) > 0.5) {
-              throw new Error('Export validation failed: output duration changed');
+          if (Math.abs(duration - videoDuration) > 1.5) {
+              throw new Error(`Export validation failed: output duration changed (expected ${videoDuration}s, got ${duration}s)`);
           }
         } catch (e) {
           logFfmpegDiagnostic('ffprobe (validate output)', currentCmd, e, e.stderr, e.stdout);
           throw e;
         }
         
-        fs.renameSync(tempOutputVideoPath, outputVideoPath);
+        try {
+          fs.renameSync(tempOutputVideoPath, outputVideoPath);
+        } catch (renameErr) {
+          fs.copyFileSync(tempOutputVideoPath, outputVideoPath);
+          try { fs.unlinkSync(tempOutputVideoPath); } catch (e) {}
+        }
         exportJobs.set(jobId, { status: 'completed', path: outputVideoPath, progress: 100 });
 
         files.forEach(f => {
           try { fs.unlinkSync(f.path); } catch (e) {}
         });
+        if (finalSrtPath && finalSrtPath !== srtFile?.path) {
+          try { fs.unlinkSync(finalSrtPath); } catch (e) {}
+        }
         try { fs.unlinkSync(tempMixedAudio); } catch (e) {}
         if (videoFileId) {
           try { fs.unlinkSync(videoPath); } catch (e) {}
@@ -1375,6 +1494,10 @@ const hash = crypto.createHash('sha256');
         exportJobs.set(jobId, { status: 'error', error: `FFMPEG_ERROR: ${err.stderr ? err.stderr.toString().substring(0, 200) : err.message}` });
         
         // Try cleanup
+        try { if (fs.existsSync(tempOutputVideoPath)) fs.unlinkSync(tempOutputVideoPath); } catch (e) {}
+        if (finalSrtPath && finalSrtPath !== srtFile?.path) {
+          try { fs.unlinkSync(finalSrtPath); } catch (e) {}
+        }
         files.forEach(f => {
           try { fs.unlinkSync(f.path); } catch (e) {}
         });

@@ -6,5 +6,9 @@ export const buildAndValidateSegments = {
   build: helpers.buildRenderedAudioSegments,
   validate: helpers.validateSegmentTimeline,
   escapeFFmpegFilterPath: helpers.escapeFFmpegFilterPath,
-  buildSubtitleVideoFilter: helpers.buildSubtitleVideoFilter
+  buildSubtitleVideoFilter: helpers.buildSubtitleVideoFilter,
+  validateSubtitleLines: helpers.validateSubtitleLines,
+  mergeTranslatedSubtitleLine: helpers.mergeTranslatedSubtitleLine,
+  validateExportAudioMetadata: helpers.validateExportAudioMetadata,
+  buildFinalAudioMap: helpers.buildFinalAudioMap
 };

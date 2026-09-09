@@ -46,6 +46,55 @@ test('timestamp parser accepts all project timestamp formats', () => {
   assert.equal(buildAndValidateSegments.parseTimestamp('00:00:03.500'), 3.5);
   assert.equal(buildAndValidateSegments.parseTimestamp('01:02:03,250'), 3723.25);
   assert.equal(buildAndValidateSegments.parseTimestamp('1:03.5'), 63.5);
+  assert.equal(buildAndValidateSegments.parseTimestamp(63.5), 63.5);
+});
+
+test('validates subtitle timing and preserves identity and timing during translation', () => {
+  const source = buildAndValidateSegments.validateSubtitleLines([
+    { id: 'seg-4', start: '1:02.5', end: '1:04.0', text: 'Hello' }
+  ]);
+
+  assert.equal(source[0].id, 'seg-4');
+  assert.equal(source[0].start, '1:02.5');
+  assert.equal(source[0].end, '1:04.0');
+
+  const translated = buildAndValidateSegments.mergeTranslatedSubtitleLine(
+    source[0],
+    { id: 'changed', start: '99:00', end: '98:00', text: 'សួស្តី' },
+    0
+  );
+  assert.deepEqual(
+    { id: translated.id, start: translated.start, end: translated.end, text: translated.text },
+    { id: 'seg-4', start: '1:02.5', end: '1:04.0', text: 'សួស្តី' }
+  );
+
+  assert.throws(
+    () => buildAndValidateSegments.validateSubtitleLines([
+      { id: 'bad', start: '1:02.5', end: '1:02.5', text: 'Hello' }
+    ]),
+    /Invalid end timestamp at subtitle index 0/
+  );
+});
+
+test('validates export metadata and selects the correct final FFmpeg audio input', () => {
+  const normalized = buildAndValidateSegments.validateExportAudioMetadata([
+    { key: 'audio_0', start: 12.5, end: 14.25, segmentId: 'seg-1', expectedDuration: 1.5 }
+  ]);
+  assert.deepEqual(
+    { start: normalized[0].start, end: normalized[0].end },
+    { start: '12.5', end: '14.25' }
+  );
+
+  assert.throws(
+    () => buildAndValidateSegments.validateExportAudioMetadata([
+      { key: 'audio_4', start: '00:00:01.000', end: '00:00:01.000' }
+    ]),
+    /Invalid end timestamp for audio_4/
+  );
+
+  assert.equal(buildAndValidateSegments.buildFinalAudioMap(true, []), '0:a');
+  assert.equal(buildAndValidateSegments.buildFinalAudioMap(false, [{}]), '1:a');
+  assert.equal(buildAndValidateSegments.buildFinalAudioMap(false, []), '');
 });
 
 test('builds a valid timeline and rejects duplicate or stale audio', async () => {
