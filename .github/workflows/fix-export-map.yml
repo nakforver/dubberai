@@ -3,14 +3,13 @@ name: Fix export audio mapping
 on:
   push:
     branches: [main]
-    paths:
-      - '.github/workflows/fix-export-map.yml'
 
 permissions:
   contents: write
 
 jobs:
   fix:
+    if: github.event.head_commit.message != 'fix: correct final audio mapping for export'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -26,15 +25,14 @@ jobs:
           new = "finalMapA = '1:a';"
           if old not in s:
               raise SystemExit('Expected export mapping line was not found; refusing to modify server.ts')
-          s2 = s.replace(old, new, 1)
-          p.write_text(s2)
+          p.write_text(s.replace(old, new, 1))
           PY
 
       - name: Commit fix and remove temporary workflow
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add server.ts .github/workflows/fix-export-map.yml
+          git add server.ts
           git rm .github/workflows/fix-export-map.yml
-          git commit -m "fix: correct final audio mapping for export"
+          git commit -m 'fix: correct final audio mapping for export'
           git push origin main
