@@ -1,0 +1,77 @@
+name: Apply export fix
+
+on:
+  push:
+    branches:
+      - fix/export-84-percent
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch export progress and FFmpeg diagnostics
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          p = Path('src/components/Editor.tsx')
+          s = p.read_text()
+          old = "  const [exportProgress, setExportProgress] = useState(0);\n  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);"
+          new = "  const [exportProgress, setExportProgress] = useState(0);\n  const [exportFailed, setExportFailed] = useState(false);\n  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);"
+          if old not in s: raise SystemExit('Editor state pattern not found')
+          s = s.replace(old, new, 1)
+
+          old = "    if (isExporting) {\n      return Math.round(67 + exportProgress * 0.33);\n    }\n\n    return downloadUrl ? 100 : 0;"
+          new = "    if (isExporting || exportFailed) {\n      return Math.round(67 + exportProgress * 0.33);\n    }\n\n    return downloadUrl ? 100 : 0;"
+          if old not in s: raise SystemExit('Editor progress pattern not found')
+          s = s.replace(old, new, 1)
+
+          old = "    setIsExporting(true);\n    setExportProgress(0);"
+          new = "    setIsExporting(true);\n    setExportFailed(false);\n    setExportProgress(0);"
+          if old not in s: raise SystemExit('Editor start pattern not found')
+          s = s.replace(old, new, 1)
+
+          old = "           setExportProgress(100);\n\n           // Exported video replaces the original video in the main preview"
+          new = "           setExportProgress(100);\n           setExportFailed(false);\n\n           // Exported video replaces the original video in the main preview"
+          if old not in s: raise SystemExit('Editor success pattern not found')
+          s = s.replace(old, new, 1)
+
+          old = "    } catch (err: any) {\n      console.error(err);\n      setTranscribeError(err.message || \"មានបញ្ហាក្នុងការនាំចេញឯកសារ (Export Failed)\");\n    } finally {"
+          new = "    } catch (err: any) {\n      console.error(err);\n      setExportFailed(true);\n      setTranscribeError(err.message || \"មានបញ្ហាក្នុងការនាំចេញឯកសារ (Export Failed)\");\n    } finally {"
+          if old not in s: raise SystemExit('Editor catch pattern not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('server.ts')
+          s = p.read_text()
+          old = """            child.on('close', (code) => {\n                if (code === 0) {\n                    exportJobs.set(jobId, {\n                        status: 'processing',\n                        progress: 90\n                    });\n                    resolve(true);\n                } else {\n                    reject(new Error('FFmpeg exited with code ' + code));\n                }\n            });"""
+          new = """            child.on('close', (code) => {\n                if (code === 0) {\n                    exportJobs.set(jobId, {\n                        status: 'processing',\n                        progress: 90\n                    });\n                    resolve(true);\n                    return;\n                }\n\n                const diagnostic = ffmpegOutputBuffer\n                    .replace(/\\x1b\\[[0-9;]*m/g, '')\n                    .trim()\n                    .slice(-4000);\n\n                exportJobs.set(jobId, {\n                    status: 'error',\n                    progress: lastExportProgress,\n                    error: `FFmpeg exited with code ${code}${diagnostic ? `\\n${diagnostic}` : ''}`\n                });\n                reject(new Error(\n                    `FFmpeg exited with code ${code}${diagnostic ? `: ${diagnostic.slice(-1000)}` : ''}`\n                ));\n            });"""
+          if old not in s: raise SystemExit('Server close pattern not found')
+          s = s.replace(old, new, 1)
+
+          old = "        exportJobs.set(jobId, { status: 'error', error: `FFMPEG_ERROR: ${err.stderr ? err.stderr.toString().substring(0, 200) : err.message}` });"
+          new = "        const existingJob = exportJobs.get(jobId);\n        exportJobs.set(jobId, {\n          status: 'error',\n          progress: existingJob?.progress ?? 50,\n          error: `FFMPEG_ERROR: ${err.stderr ? err.stderr.toString().substring(0, 2000) : err.message}`\n        });"
+          if old not in s: raise SystemExit('Server error pattern not found')
+          s = s.replace(old, new, 1)
+
+          old = "        if (videoFileId) {\n          try { fs.unlinkSync(videoPath); } catch (e) {}\n        }\n      }\n    })();"
+          new = "        if (videoFileId) {\n          try { fs.unlinkSync(videoPath); } catch (e) {}\n        }\n        try {\n          const failedTempOutput = path.join(os.tmpdir(), `.final_${jobId}.tmp.mp4`);\n          if (fs.existsSync(failedTempOutput)) fs.unlinkSync(failedTempOutput);\n        } catch (e) {}\n      }\n    })();"
+          if old not in s: raise SystemExit('Server cleanup pattern not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+
+          rm -f .github/workflows/apply-export-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server.ts src/components/Editor.tsx .github/workflows/apply-export-fix.yml
+          git commit -m "fix export progress and FFmpeg failure diagnostics"
+          git push origin HEAD:fix/export-84-percent
