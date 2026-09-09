@@ -4,5 +4,7 @@ const helpers = require('../dist/server.test.cjs');
 export const buildAndValidateSegments = {
   parseTimestamp: helpers.parseTimestamp,
   build: helpers.buildRenderedAudioSegments,
-  validate: helpers.validateSegmentTimeline
+  validate: helpers.validateSegmentTimeline,
+  escapeFFmpegFilterPath: helpers.escapeFFmpegFilterPath,
+  buildSubtitleVideoFilter: helpers.buildSubtitleVideoFilter
 };

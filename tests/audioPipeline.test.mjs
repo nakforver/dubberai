@@ -106,3 +106,12 @@ test('preserves intentional source overlap while rejecting TTS overrun', async (
     /TTS audio is too long/
   );
 });
+
+test('builds an FFmpeg filter that burns SRT subtitles with Khmer fonts', () => {
+  const srtPath = '/tmp/a subtitle.srt';
+  const filter = buildAndValidateSegments.buildSubtitleVideoFilter(srtPath);
+  assert.match(filter, /^subtitles='/);
+  assert.match(filter, /fontsdir='[^']*\/fonts'/);
+  assert.match(filter, /FontName=Noto Sans Khmer/);
+  assert.equal(buildAndValidateSegments.escapeFFmpegFilterPath(srtPath), '/tmp/a subtitle.srt');
+});

@@ -15,6 +15,20 @@ import util from 'util';
 
 const execAsync = util.promisify(exec);
 
+function escapeFFmpegFilterPath(value: string): string {
+  return value
+    .replace(/\\/g, '/')
+    .replace(/'/g, "\\'")
+    .replace(/:/g, '\\:');
+}
+
+function buildSubtitleVideoFilter(srtPath: string): string {
+  const fontsDir = path.resolve(process.cwd(), 'fonts');
+  return (
+    `subtitles='${escapeFFmpegFilterPath(srtPath)}':fontsdir='${fontsDir}'` +
+    `:force_style='FontName=Noto Sans Khmer,FontSize=24,BorderStyle=1,Outline=2,Shadow=0,MarginV=40'`
+  );
+}
 
 function logFfmpegDiagnostic(stepName, command, error, stderr, stdout) {
   const timestamp = new Date().toISOString();
@@ -1141,21 +1155,37 @@ const hash = crypto.createHash('sha256');
         } else if (hasOriginalAudio) {
            finalMapA = '0:a';
         }
-        // STEP 2: Export one video stream and exactly one intended audio stream.
-        const mapV = '0:v';
+        // STEP 2: Burn the uploaded SRT into the video stream and export
+        // exactly one intended audio stream. Subtitle burn-in requires a
+        // video re-encode; video copying cannot apply a video filter.
+        const hasSubtitles = Boolean(srtFile && srtContent.trim());
+        let videoFilter = '';
+        let mapV = '0:v';
+
+        if (hasSubtitles) {
+          videoFilter = buildSubtitleVideoFilter(srtFile!.path);
+          mapV = '[vout]';
+        }
 
         let videoCmd = `ffmpeg -nostdin -hide_banner -loglevel info -i "${videoPath}"`;
         if (renderedSegments.length > 0) {
             videoCmd += ` -i "${tempMixedAudio}"`;
         }
-        
+
+        if (hasSubtitles) {
+            videoCmd += ` -filter_complex "${videoFilter}[vout]"`;
+        }
+
         videoCmd += ` -map "${mapV}"`;
         if (finalMapA) {
             videoCmd += ` -map "${finalMapA}"`;
         }
-        
-        videoCmd += ` -c:v copy`;
+
+        videoCmd += hasSubtitles
+            ? ' -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p'
+            : ' -c:v copy';
         videoCmd += ` -c:a aac -ar 44100 -ac 2 -b:a 192k`;
+        videoCmd += ' -movflags +faststart';
         videoCmd += ` -y "${outputVideoPath}"`;
         
 
