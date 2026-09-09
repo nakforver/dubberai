@@ -10,6 +10,18 @@ const workspace = path.resolve('.');
 const fixtureDir = path.join(workspace, 'tests', 'fixtures');
 const testVideo = path.join(fixtureDir, 'timing-video.mp4');
 
+test('Editor export flow uses the real upload, status, and download APIs', async () => {
+  const editorSource = await fs.readFile(
+    path.join(workspace, 'src/components/Editor.tsx'),
+    'utf8'
+  );
+
+  assert.ok(editorSource.includes('/api/upload-chunk'));
+  assert.ok(editorSource.includes("fetch('/api/export-video'"));
+  assert.ok(editorSource.includes('/api/export/status/'));
+  assert.ok(editorSource.includes('/api/export/download/'));
+});
+
 function makeAudio(pathname, seconds) {
   execFileSync('ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
