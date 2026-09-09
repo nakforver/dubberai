@@ -1,0 +1,13 @@
+[project]
+name = "ai-dinmagic-fastapi"
+version = "1.0.0"
+description = "AI-Dinmagic FastAPI Proxy"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]",
+    "httpx",
+    "python-multipart"
+]
+
+[tool.fastapi]
+entrypoint = "main:app"

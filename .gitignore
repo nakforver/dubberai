@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.*
+!.env.example
+
+fastapi_backend/venv/
+fastapi_backend/__pycache__/
+__pycache__/
+*.pyc
+
+dist/
+tmp/
+*.log
+
+.DS_Store
