@@ -50,7 +50,10 @@ function logFfmpegDiagnostic(stepName, command, error, stderr, stdout) {
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const MAX_ALLOWED_TTS_OVERSPEECH = 0.25;
-const MAX_TTS_SPEED_INCREASE = 0.35;
+// Khmer TTS can be substantially longer than very short source subtitles.
+// Allow auto-fitting up to 2.5x total tempo; FFmpeg's atempo filter is applied
+// as a chain when the requested rate is above its single-filter limit of 2x.
+const MAX_TTS_SPEED_INCREASE = 1.5;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
@@ -94,6 +97,20 @@ function parseTimestamp(value: string | undefined): number | null {
 
 function formatSeconds(seconds: number): string {
   return seconds.toFixed(3);
+}
+
+function buildAtempoFilter(rate: number): string {
+  if (rate <= 1) return '';
+  const filters: string[] = [];
+  let remaining = rate;
+  while (remaining > 2) {
+    filters.push('atempo=2.0000');
+    remaining /= 2;
+  }
+  if (remaining > 1.0001) {
+    filters.push(`atempo=${remaining.toFixed(4)}`);
+  }
+  return filters.join(',');
 }
 
 async function probeAudio(path: string): Promise<{ duration: number; sampleRate: number; channels: number }> {
@@ -1124,9 +1141,8 @@ const hash = crypto.createHash('sha256');
               const inputIndex = hasOriginalAudio ? index + 1 : index;
               mixCmd += ` -i "${segment.path}"`;
               const delayMs = Math.round(segment.placementSeconds * 1000);
-              const rate = segment.rate === 1
-                ? ''
-                : `,atempo=${segment.rate.toFixed(4)}`;
+              const atempo = buildAtempoFilter(segment.rate);
+              const rate = atempo ? `,${atempo}` : '';
               audioFilter +=
                 `[${inputIndex}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo${rate},` +
                 `adelay=${delayMs}|${delayMs}[a${inputIndex}]; `;
