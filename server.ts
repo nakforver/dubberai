@@ -1151,7 +1151,9 @@ const hash = crypto.createHash('sha256');
                throw new Error('FFmpeg mix error: ' + (e.stderr || e.message).substring(0, 500));
            }
            
-           finalMapA = hasOriginalAudio ? '1:a' : '0:a';
+           // The final export always adds tempMixedAudio as input #1 when TTS
+           // exists, regardless of whether the source video has audio.
+           finalMapA = '1:a';
         } else if (hasOriginalAudio) {
            finalMapA = '0:a';
         }
