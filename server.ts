@@ -99,6 +99,41 @@ function formatSeconds(seconds: number): string {
   return seconds.toFixed(3);
 }
 
+function formatTimelineTimestamp(seconds: number): string {
+  const safeSeconds = Math.max(0, seconds);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const remaining = safeSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${remaining.toFixed(3).padStart(6, '0')}`
+    : `${minutes}:${remaining.toFixed(3).padStart(6, '0')}`;
+}
+
+function normalizeSubtitleTimeline(lines: any[]): any[] {
+  return lines
+    .map((line, index) => {
+      const start = parseTimestamp(String(line?.start ?? ''));
+      let end = parseTimestamp(String(line?.end ?? ''));
+      if (start === null || start < 0) {
+        console.warn(`[TIMELINE] Dropping subtitle ${index + 1}: invalid start timestamp`);
+        return null;
+      }
+      if (end === null || end <= start) {
+        const nextStart = parseTimestamp(String(lines[index + 1]?.start ?? ''));
+        end = nextStart !== null && nextStart > start ? nextStart : start + 0.75;
+        console.warn(
+          `[TIMELINE] Normalized subtitle ${index + 1} end to ${formatTimelineTimestamp(end)}`
+        );
+      }
+      return {
+        ...line,
+        start: formatTimelineTimestamp(start),
+        end: formatTimelineTimestamp(end)
+      };
+    })
+    .filter(Boolean);
+}
+
 function buildAtempoFilter(rate: number): string {
   if (rate <= 1) return '';
   const filters: string[] = [];
@@ -905,7 +940,8 @@ Do not output an empty array unless there is absolutely no speech.` },
         console.error('Failed to delete from Gemini', e);
       }
 
-      jobs.set(jobId, { status: 'done', progress: 100, lines });
+      const normalizedLines = normalizeSubtitleTimeline(lines);
+      jobs.set(jobId, { status: 'done', progress: 100, lines: normalizedLines });
     } catch (error: any) {
       console.error('Transcription error:', error);
       let errorMessage = error.message;
