@@ -1265,7 +1265,7 @@ const hash = crypto.createHash('sha256');
         
         // STEP 1: Mix validated TTS and the original bed audio exactly once.
         if (renderedSegments.length > 0) {
-           let mixCmd = `ffmpeg -nostdin -hide_banner -loglevel error`;
+           let mixCmd = `ffmpeg -nostdin -hide_banner -threads 0 -loglevel error`;
            let audioFilter = '';
            let mixInputs = '';
            let inputCount = renderedSegments.length;
@@ -1297,7 +1297,7 @@ const hash = crypto.createHash('sha256');
               audioFilter += `${mixInputs}amix=inputs=${inputCount}:duration=${mixDurationMode}:dropout_transition=0:normalize=0[aout]`;
            }
            
-           mixCmd += ` -filter_complex "${audioFilter}" -map "[aout]" -c:a aac -ar 44100 -ac 2 -b:a 192k -y "${tempMixedAudio}"`;
+           mixCmd += ` -filter_complex "${audioFilter}" -map "[aout]" -c:a aac -ar 44100 -ac 2 -b:a 192k -threads 0 -y "${tempMixedAudio}"`;
            console.log('Running FFmpeg audio mix:', mixCmd);
            let mixResult;
            try {
@@ -1334,7 +1334,7 @@ const hash = crypto.createHash('sha256');
           mapV = '[vout]';
         }
 
-        let videoCmd = `ffmpeg -nostdin -hide_banner -loglevel info -i "${videoPath}"`;
+        let videoCmd = `ffmpeg -nostdin -hide_banner -threads 0 -loglevel info -i "${videoPath}"`;
         if (renderedSegments.length > 0) {
             videoCmd += ` -i "${tempMixedAudio}"`;
         }
@@ -1349,7 +1349,7 @@ const hash = crypto.createHash('sha256');
         }
 
         videoCmd += hasSubtitles
-            ? ' -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p'
+            ? ' -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -threads 0'
             : ' -c:v copy';
         if (finalMapA) {
             videoCmd += ` -c:a aac -ar 44100 -ac 2 -b:a 192k`;

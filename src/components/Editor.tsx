@@ -464,22 +464,35 @@ const videoRef = useRef<HTMLVideoElement>(null);
          const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
          videoTotalChunks = Math.ceil(videoFile.size / CHUNK_SIZE);
          
-         for (let i = 0; i < videoTotalChunks; i++) {
+         const CONCURRENCY = 3;
+         let uploadedCount = 0;
+         const uploadChunk = async (i: number) => {
            const chunk = videoFile.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
            let retries = 0;
            let chunkRes;
            while (retries < 10) {
              try {
                chunkRes = await fetch(`/api/upload-chunk?fileId=${videoFileId}&chunkIndex=${i}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
-               if (chunkRes.ok) break;
+               if (chunkRes && chunkRes.ok) break;
              } catch (e) {}
              retries++;
              await new Promise(r => setTimeout(r, 1000));
            }
            if (!chunkRes || !chunkRes.ok) throw new Error('បរាជ័យក្នុងការបញ្ជូនវីដេអូទៅកាន់ម៉ាស៊ីនមេសម្រាប់ការនាំចេញ');
-           setExportProgress(Math.round(((i + 1) / videoTotalChunks) * 50)); // Upload takes up to 50%
-           await new Promise(r => setTimeout(r, 50)); // small delay to prevent rate limit
-         }
+           uploadedCount++;
+           setExportProgress(Math.round((uploadedCount / videoTotalChunks) * 50)); // Upload takes up to 50%
+         };
+
+         const chunkIndices = Array.from({ length: videoTotalChunks }, (_, i) => i);
+         const workers = Array.from({ length: Math.min(CONCURRENCY, videoTotalChunks) }, async () => {
+           while (chunkIndices.length > 0) {
+             const idx = chunkIndices.shift();
+             if (idx !== undefined) {
+               await uploadChunk(idx);
+             }
+           }
+         });
+         await Promise.all(workers);
       }
 
       const formData = new FormData();
@@ -489,12 +502,15 @@ const videoRef = useRef<HTMLVideoElement>(null);
       }
       formData.append('srt', new Blob([srtContent], { type: 'text/srt' }), 'subtitles.srt');
       
-      const audioMetadata = [];
       const audioLines = exportLines.filter(l => l.audioUrl);
-      
+      const audioBlobs = await Promise.all(
+        audioLines.map(line => fetch(line.audioUrl as string).then(r => r.blob()))
+      );
+
+      const audioMetadata = [];
       for (let i = 0; i < audioLines.length; i++) {
         const line = audioLines[i];
-        const audioData = await fetch(line.audioUrl as string).then(r => r.blob());
+        const audioData = audioBlobs[i];
         const key = `audio_${i}`;
         formData.append(key, audioData, `${key}.mp3`);
         audioMetadata.push({
