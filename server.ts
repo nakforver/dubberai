@@ -462,6 +462,33 @@ app.post('/api/upload-chunk', express.raw({ type: '*/*', limit: '500mb' }), asyn
 const jobs = new Map<string, { status: string, progress: number, lines?: any[], error?: string }>();
 const exportJobs = new Map<string, { status: string; error?: string; path?: string; progress?: number; }>();
 const exportCache = new Map<string, string>();
+const uploadedVideos = new Map<string, number>();
+
+function trackUploadedVideo(fileId: string) {
+  if (!fileId) return;
+  uploadedVideos.set(fileId, Date.now());
+  const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [id, time] of uploadedVideos.entries()) {
+    if (time < twoHoursAgo) {
+      try {
+        const oldPath = path.join(os.tmpdir(), `upload_${id}`);
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      } catch (e) {}
+      uploadedVideos.delete(id);
+    }
+  }
+}
+
+app.get('/api/video-exists', (req, res) => {
+  const fileId = req.query.fileId as string;
+  if (!fileId) return res.json({ exists: false });
+  const videoPath = path.join(os.tmpdir(), `upload_${fileId}`);
+  const exists = fs.existsSync(videoPath) && fs.statSync(videoPath).size > 0;
+  if (exists) {
+    trackUploadedVideo(fileId);
+  }
+  res.json({ exists });
+});
 
 
 // ============================================================
@@ -879,7 +906,7 @@ if (activeModel === 'amazon') {
              await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: s3Key }));
          } catch(e) { console.error('Failed to cleanup S3', e); }
          
-         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+         if (fs.existsSync(filePath)) trackUploadedVideo(fileId);
          if (uploadPath !== filePath && fs.existsSync(uploadPath)) fs.unlinkSync(uploadPath);
          
          jobs.set(jobId, { status: 'done', progress: 100, lines: translatedLines });
@@ -1034,7 +1061,7 @@ Do not output an empty array unless there is absolutely no speech.` },
       const validatedLines = validateSubtitleLines(normalizedLines);
       
       // Clean up
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      if (fs.existsSync(filePath)) trackUploadedVideo(fileId);
       if (uploadPath !== filePath && fs.existsSync(uploadPath)) fs.unlinkSync(uploadPath);
       try {
         await currentAi.files.delete({ name: uploadResult.name });
@@ -1194,7 +1221,15 @@ const hash = crypto.createHash('sha256');
         fs.appendFileSync(videoPath, chunkData);
         fs.unlinkSync(chunkPath);
       }
-    } else {
+      trackUploadedVideo(videoFileId);
+    } else if (videoFileId) {
+      const existingPath = path.join(os.tmpdir(), `upload_${videoFileId}`);
+      if (fs.existsSync(existingPath) && fs.statSync(existingPath).size > 0) {
+        videoPath = existingPath;
+        trackUploadedVideo(videoFileId);
+      }
+    }
+    if (!videoPath) {
       const videoFile = files.find(f => f.fieldname === 'video');
       if (videoFile) {
         videoPath = videoFile.path;
@@ -1244,6 +1279,23 @@ const hash = crypto.createHash('sha256');
           throw new Error('Export validation failed: invalid video duration');
         }
 
+        let videoWidth = 0;
+        let videoHeight = 0;
+        let videoFps = 0;
+        try {
+          currentCmd = `ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "${videoPath}"`;
+          const { stdout } = await execAsync(currentCmd);
+          const parts = stdout.trim().split(',');
+          videoWidth = Number(parts[0]) || 0;
+          videoHeight = Number(parts[1]) || 0;
+          if (parts[2]) {
+            const [num, den] = parts[2].split('/').map(Number);
+            videoFps = den ? (num / den) : Number(parts[2]) || 0;
+          }
+        } catch(e) {
+          logFfmpegDiagnostic('ffprobe (video dimensions/fps)', currentCmd, e, e.stderr, e.stdout);
+        }
+
         const renderedSegments = await buildRenderedAudioSegments(files, audioMetadata, videoDuration);
         validateSegmentTimeline(renderedSegments, videoDuration);
         for (const segment of renderedSegments) {
@@ -1272,7 +1324,7 @@ const hash = crypto.createHash('sha256');
            let mixDurationMode = 'longest';
            
            if (hasOriginalAudio) {
-               mixCmd += ` -i "${videoPath}"`;
+               mixCmd += ` -vn -i "${videoPath}"`;
                audioFilter += `[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume=0.1[a0]; `;
                mixInputs += `[a0]`;
                mixDurationMode = 'first';
@@ -1330,7 +1382,20 @@ const hash = crypto.createHash('sha256');
         }
 
         if (hasSubtitles) {
-          videoFilter = buildSubtitleVideoFilter(finalSrtPath);
+          let scaleFilter = '';
+          if (videoWidth > 0 && videoHeight > 0) {
+            const isPortrait = videoHeight > videoWidth;
+            if (!isPortrait && videoHeight > 1080) {
+              scaleFilter = 'scale=-2:1080,';
+            } else if (isPortrait && videoWidth > 1080) {
+              scaleFilter = 'scale=1080:-2,';
+            }
+          }
+          let fpsFilter = '';
+          if (videoFps > 30) {
+            fpsFilter = 'fps=30,';
+          }
+          videoFilter = `${scaleFilter}${fpsFilter}${buildSubtitleVideoFilter(finalSrtPath)}`;
           mapV = '[vout]';
         }
 
@@ -1492,7 +1557,7 @@ const hash = crypto.createHash('sha256');
         }
         try { fs.unlinkSync(tempMixedAudio); } catch (e) {}
         if (videoFileId) {
-          try { fs.unlinkSync(videoPath); } catch (e) {}
+          trackUploadedVideo(videoFileId);
         }
 
         
@@ -1509,7 +1574,7 @@ const hash = crypto.createHash('sha256');
           try { fs.unlinkSync(f.path); } catch (e) {}
         });
         if (videoFileId) {
-          try { fs.unlinkSync(videoPath); } catch (e) {}
+          trackUploadedVideo(videoFileId);
         }
       }
     })();
@@ -1519,21 +1584,10 @@ const hash = crypto.createHash('sha256');
   }
 });
 
-app.get('/api/export/status/:jobId', async (req, res) => {
+app.get('/api/export/status/:jobId', (req, res) => {
   const jobId = req.params.jobId;
-  let job = exportJobs.get(jobId);
+  const job = exportJobs.get(jobId);
   if (!job) return res.status(404).json({ error: 'Job not found' });
-  
-  // Long polling: Keep the request open to prevent Cloud Run from throttling CPU
-  // during FFmpeg background processing.
-  let retries = 0;
-  while (job.status === 'processing' && retries < 15) {
-    await new Promise(r => setTimeout(r, 1000));
-    job = exportJobs.get(jobId);
-    if (!job) return res.status(404).json({ error: 'Job not found' });
-    retries++;
-  }
-  
   res.json(job);
 });
 

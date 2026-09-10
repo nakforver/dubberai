@@ -33,6 +33,7 @@ export default function Editor({ onNavigate, videoFile, apiKey, awsAccessKeyId, 
   const [exportProgress, setExportProgress] = useState(0);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [transcribeError, setTranscribeError] = useState<string | null>(null);
+  const [serverVideoFileId, setServerVideoFileId] = useState<string>('');
   
   // Keep track of currently generating audios
   const [generatingLines, setGeneratingLines] = useState<Set<string>>(new Set());
@@ -67,7 +68,6 @@ const videoRef = useRef<HTMLVideoElement>(null);
     if (videoFile) {
       const url = URL.createObjectURL(videoFile);
       setVideoUrl(url);
-
       return () => URL.revokeObjectURL(url);
     }
   }, [videoFile]);
@@ -95,6 +95,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
 
     try {
       const fileId = Date.now().toString();
+      setServerVideoFileId(fileId);
       const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
       const totalChunks = Math.ceil(videoFile.size / CHUNK_SIZE);
       
@@ -460,39 +461,57 @@ const videoRef = useRef<HTMLVideoElement>(null);
       let videoTotalChunks = 0;
       
       if (videoFile) {
-         videoFileId = 'export_' + Date.now().toString();
-         const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
-         videoTotalChunks = Math.ceil(videoFile.size / CHUNK_SIZE);
-         
-         const CONCURRENCY = 3;
-         let uploadedCount = 0;
-         const uploadChunk = async (i: number) => {
-           const chunk = videoFile.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-           let retries = 0;
-           let chunkRes;
-           while (retries < 10) {
-             try {
-               chunkRes = await fetch(`/api/upload-chunk?fileId=${videoFileId}&chunkIndex=${i}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
-               if (chunkRes && chunkRes.ok) break;
-             } catch (e) {}
-             retries++;
-             await new Promise(r => setTimeout(r, 1000));
-           }
-           if (!chunkRes || !chunkRes.ok) throw new Error('បរាជ័យក្នុងការបញ្ជូនវីដេអូទៅកាន់ម៉ាស៊ីនមេសម្រាប់ការនាំចេញ');
-           uploadedCount++;
-           setExportProgress(Math.round((uploadedCount / videoTotalChunks) * 50)); // Upload takes up to 50%
-         };
-
-         const chunkIndices = Array.from({ length: videoTotalChunks }, (_, i) => i);
-         const workers = Array.from({ length: Math.min(CONCURRENCY, videoTotalChunks) }, async () => {
-           while (chunkIndices.length > 0) {
-             const idx = chunkIndices.shift();
-             if (idx !== undefined) {
-               await uploadChunk(idx);
+         let alreadyOnServer = false;
+         if (serverVideoFileId) {
+           try {
+             const checkRes = await fetch(`/api/video-exists?fileId=${serverVideoFileId}`);
+             if (checkRes.ok) {
+               const checkData = await checkRes.json();
+               if (checkData.exists) {
+                 alreadyOnServer = true;
+                 videoFileId = serverVideoFileId;
+                 setExportProgress(50);
+               }
              }
-           }
-         });
-         await Promise.all(workers);
+           } catch (e) {}
+         }
+
+         if (!alreadyOnServer) {
+           videoFileId = 'export_' + Date.now().toString();
+           const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
+           videoTotalChunks = Math.ceil(videoFile.size / CHUNK_SIZE);
+           
+           const CONCURRENCY = 3;
+           let uploadedCount = 0;
+           const uploadChunk = async (i: number) => {
+             const chunk = videoFile.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+             let retries = 0;
+             let chunkRes;
+             while (retries < 10) {
+               try {
+                 chunkRes = await fetch(`/api/upload-chunk?fileId=${videoFileId}&chunkIndex=${i}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: chunk });
+                 if (chunkRes && chunkRes.ok) break;
+               } catch (e) {}
+               retries++;
+               await new Promise(r => setTimeout(r, 1000));
+             }
+             if (!chunkRes || !chunkRes.ok) throw new Error('បរាជ័យក្នុងការបញ្ជូនវីដេអូទៅកាន់ម៉ាស៊ីនមេសម្រាប់ការនាំចេញ');
+             uploadedCount++;
+             setExportProgress(Math.round((uploadedCount / videoTotalChunks) * 50)); // Upload takes up to 50%
+           };
+
+           const chunkIndices = Array.from({ length: videoTotalChunks }, (_, i) => i);
+           const workers = Array.from({ length: Math.min(CONCURRENCY, videoTotalChunks) }, async () => {
+             while (chunkIndices.length > 0) {
+               const idx = chunkIndices.shift();
+               if (idx !== undefined) {
+                 await uploadChunk(idx);
+               }
+             }
+           });
+           await Promise.all(workers);
+           setServerVideoFileId(videoFileId);
+         }
       }
 
       const formData = new FormData();
