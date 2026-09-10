@@ -7,6 +7,8 @@ export const buildAndValidateSegments = {
   validate: helpers.validateSegmentTimeline,
   escapeFFmpegFilterPath: helpers.escapeFFmpegFilterPath,
   buildSubtitleVideoFilter: helpers.buildSubtitleVideoFilter,
+  buildAssVideoFilter: helpers.buildAssVideoFilter,
+  convertSrtToAss: helpers.convertSrtToAss,
   validateSubtitleLines: helpers.validateSubtitleLines,
   mergeTranslatedSubtitleLine: helpers.mergeTranslatedSubtitleLine,
   validateExportAudioMetadata: helpers.validateExportAudioMetadata,

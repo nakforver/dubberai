@@ -209,3 +209,29 @@ test('builds an FFmpeg filter that burns SRT subtitles with Khmer fonts', () => 
   assert.match(filter, /FontName=Noto Sans Khmer/);
   assert.equal(buildAndValidateSegments.escapeFFmpegFilterPath(srtPath), '/tmp/a subtitle.srt');
 });
+
+test('builds an FFmpeg filter that burns ASS subtitles with HarfBuzz complex shaping', () => {
+  const assPath = '/tmp/subtitles_123.ass';
+  const filter = buildAndValidateSegments.buildAssVideoFilter(assPath);
+  assert.match(filter, /^ass='/);
+  assert.match(filter, /fontsdir='[^']*\/fonts'/);
+  assert.equal(buildAndValidateSegments.escapeFFmpegFilterPath(assPath), '/tmp/subtitles_123.ass');
+});
+
+test('converts SRT to ASS with correct PlayRes, Noto Sans Khmer font, and intact Khmer typography', () => {
+  const srt = `1\n00:00:01,200 --> 00:00:04,800\nហយីបញ្ជាឱ្យចូលវាំងជាស្រីរាំងនៃណៃមែយ៉ុងប៊ូ។\n`;
+  const assLandscape = buildAndValidateSegments.convertSrtToAss(srt, 1280, 720);
+  assert.match(assLandscape, /PlayResX: 1280/);
+  assert.match(assLandscape, /PlayResY: 720/);
+  assert.match(assLandscape, /Noto Sans Khmer/);
+  assert.match(assLandscape, /Dialogue: 0,0:00:01\.20,0:00:04\.80,Default,,0,0,0,,/);
+  // Ensure complex Khmer words are intact
+  assert.match(assLandscape, /ស្រី/);
+  assert.match(assLandscape, /បញ្ជា/);
+
+  // Test portrait mode scaling
+  const assPortrait = buildAndValidateSegments.convertSrtToAss(srt, 720, 1280);
+  assert.match(assPortrait, /PlayResX: 720/);
+  assert.match(assPortrait, /PlayResY: 1280/);
+  assert.match(assPortrait, /MarginV, Encoding\nStyle: Default,Noto Sans Khmer,26/);
+});

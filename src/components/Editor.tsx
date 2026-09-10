@@ -453,23 +453,31 @@ const videoRef = useRef<HTMLVideoElement>(null);
 
       const formatKhmerSubtitleText = (text: string): string => {
         if (!text) return '';
-        if (!/[\u1780-\u17FF]/.test(text)) return text;
+        const normalized = text.normalize('NFC');
+        if (!/[\u1780-\u17FF]/.test(normalized)) return normalized;
         try {
-          const clean = text.replace(/\u200B+/g, '');
+          const clean = normalized.replace(/\u200B+/g, '');
           const segmenter = new Intl.Segmenter('km', { granularity: 'word' });
           const segments = [...segmenter.segment(clean)].map(s => s.segment);
           let result = '';
+          const KHMER_COMBINING = /[\u17B4-\u17D3\u17DD]/;
           for (let i = 0; i < segments.length; i++) {
             const seg = segments[i];
             result += seg;
             const next = segments[i + 1];
-            if (next && !/\s/.test(seg) && !/\s/.test(next)) {
+            if (
+              next &&
+              !/\s/.test(seg) &&
+              !/\s/.test(next) &&
+              !seg.endsWith('\u17D2') &&
+              !KHMER_COMBINING.test(next[0])
+            ) {
               result += '\u200B';
             }
           }
           return result;
         } catch (e) {
-          return text;
+          return normalized;
         }
       };
 
