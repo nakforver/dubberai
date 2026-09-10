@@ -1,25 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { 
-  ArrowLeft, 
-  Music, 
-  LayoutGrid, 
-  MoreVertical, 
-  Play, 
-  Pause, 
-  Mic, 
-  FileAudio, 
-  Download, 
-  CheckSquare, 
-  Square, 
-  Volume2, 
-  CheckCircle2, 
-  Loader2,
-  Bot,
-  Sparkles,
-  X,
-  Send,
-  Settings as SettingsIcon
-} from 'lucide-react';
+import { ArrowLeft, Music, LayoutGrid, MoreVertical, Play, Pause, Mic, FileAudio, Download, CheckSquare, Square, Volume2, CheckCircle2, Loader2 } from 'lucide-react';
 import { ViewState, SubtitleLine } from '../types';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
@@ -35,17 +15,9 @@ interface EditorProps {
   workflow: string;
   voice: 'Piseth' | 'Sreymom';
   model: string;
-  aiProvider?: string;
-  customApiKey?: string;
-  customBaseUrl?: string;
-  customModel?: string;
 }
 
-export default function Editor({ 
-  onNavigate, videoFile, apiKey, awsAccessKeyId, awsSecretAccessKey, 
-  awsRegion, awsS3Bucket, workflow, voice, model,
-  aiProvider = 'gemini', customApiKey = '', customBaseUrl = 'https://codecraftapi.com/v1', customModel = 'claude-sonnet-5'
-}: EditorProps) {
+export default function Editor({ onNavigate, videoFile, apiKey, awsAccessKeyId, awsSecretAccessKey, awsRegion, awsS3Bucket, workflow, voice, model }: EditorProps) {
   const [lines, setLines] = useState<SubtitleLine[]>([]);
 
   const linesRef = useRef<SubtitleLine[]>([]);
@@ -66,83 +38,7 @@ export default function Editor({
   // Keep track of currently generating audios
   const [generatingLines, setGeneratingLines] = useState<Set<string>>(new Set());
   const [ttsBatchProgress, setTtsBatchProgress] = useState({ current: 0, total: 0, active: false });
-
-  // AI Agent Assistant State
-  const [isAgentOpen, setIsAgentOpen] = useState(false);
-  const [agentMessages, setAgentMessages] = useState<Array<{ role: 'user' | 'assistant', content: string }>>([]);
-  const [agentInput, setAgentInput] = useState('');
-  const [isAgentThinking, setIsAgentThinking] = useState(false);
-  const [suggestedSubtitles, setSuggestedSubtitles] = useState<Array<{ id: string, text: string }> | null>(null);
-
-  const handleSendAgentMessage = async (textToSend?: string) => {
-    const text = (textToSend || agentInput).trim();
-    if (!text || isAgentThinking) return;
-
-    const newMessages = [...agentMessages, { role: 'user' as const, content: text }];
-    setAgentMessages(newMessages);
-    setAgentInput('');
-    setIsAgentThinking(true);
-
-    try {
-      const res = await fetch('/api/ai-agent/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: newMessages,
-          provider: aiProvider,
-          model: aiProvider === 'gemini' ? model : customModel,
-          apiKey: aiProvider === 'gemini' ? apiKey : customApiKey,
-          baseUrl: customBaseUrl,
-          subtitles: linesRef.current.map(l => ({ id: l.id, text: l.text, start: l.start, end: l.end }))
-        })
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'AI Agent failed to respond');
-      }
-
-      const reply = data.reply || '';
-      setAgentMessages([...newMessages, { role: 'assistant', content: reply }]);
-
-      // Check if reply contains a JSON block with subtitle updates
-      const jsonMatch = reply.match(/```json\s*(\[\s*\{[\s\S]*?\}\s*\])\s*```/i) || reply.match(/(\[\s*\{\s*"id"[\s\S]*?\}\s*\])/);
-      if (jsonMatch) {
-        try {
-          const parsed = JSON.parse(jsonMatch[1]);
-          if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].id && parsed[0].text) {
-            setSuggestedSubtitles(parsed);
-          }
-        } catch {}
-      }
-    } catch (err: any) {
-      setAgentMessages([
-        ...newMessages,
-        { role: 'assistant', content: `⚠️ មានបញ្ហា: ${err.message || err}` }
-      ]);
-    } finally {
-      setIsAgentThinking(false);
-    }
-  };
-
-  const applySuggestedSubtitles = () => {
-    if (!suggestedSubtitles || suggestedSubtitles.length === 0) return;
-    const map = new Map(suggestedSubtitles.map(s => [String(s.id), s.text]));
-    setLines(prev => prev.map(line => {
-      const newText = map.get(String(line.id));
-      if (newText && newText !== line.text) {
-        return {
-          ...line,
-          text: newText,
-          generated: false,
-          audioUrl: undefined,
-          audioDuration: undefined
-        };
-      }
-      return line;
-    }));
-    setSuggestedSubtitles(null);
-  };
+  
   
   // Unified MAGIC PROCESS progress: one continuous 0–100% cycle
   const magicProgress = (() => {
@@ -240,9 +136,6 @@ const videoRef = useRef<HTMLVideoElement>(null);
       if (apiKey) {
         headers['x-api-key'] = apiKey;
       }
-      if (customApiKey) {
-        headers['x-custom-api-key'] = customApiKey;
-      }
       if (awsAccessKeyId) {
         headers['x-aws-access-key-id'] = awsAccessKeyId;
       }
@@ -264,11 +157,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
            mimetype: videoFile.type || 'video/mp4', 
            model,
            workflow,
-           totalChunks,
-           aiProvider,
-           customApiKey,
-           customBaseUrl,
-           customModel
+           totalChunks
         }),
       });
 
@@ -784,21 +673,10 @@ const videoRef = useRef<HTMLVideoElement>(null);
         <div className="truncate flex-1 text-center font-medium text-sm text-gray-200 px-4">
           {videoFile?.name || '[2010년 사극 레전드] 동이 Dong Yi.mp4'}
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setIsAgentOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1 bg-gradient-to-r from-pink-950/80 to-purple-950/80 hover:from-pink-900 hover:to-purple-900 border border-pink-500/50 rounded-full text-pink-300 hover:text-white text-xs font-semibold shadow-[0_0_12px_rgba(236,72,153,0.2)] transition"
-          >
-            <Bot size={14} className="text-pink-400 animate-pulse" />
-            <span>AI Agent</span>
-          </button>
-          <button 
-            onClick={() => onNavigate('settings')} 
-            className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition"
-            title="ការកំណត់ & AI Model"
-          >
-            <SettingsIcon size={18} />
-          </button>
+        <div className="flex items-center gap-4 text-gray-400">
+          <Music size={20} className="hover:text-white cursor-pointer" />
+          <LayoutGrid size={20} className="hover:text-white cursor-pointer" />
+          <MoreVertical size={20} className="hover:text-white cursor-pointer" />
         </div>
       </div>
 
@@ -1216,139 +1094,6 @@ const videoRef = useRef<HTMLVideoElement>(null);
 )}
   </button>
 </div>
-
-      {/* AI AGENT ASSISTANT DRAWER / MODAL */}
-      {isAgentOpen && (
-        <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/70 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-[#12111a] border-t border-gray-800 rounded-t-3xl max-h-[85vh] flex flex-col shadow-2xl animate-in slide-in-from-bottom-5 w-full max-w-md mx-auto">
-            {/* Drawer Header */}
-            <div className="flex items-center justify-between p-4 border-b border-gray-800/80">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-pink-900/30 rounded-xl border border-pink-700/40">
-                  <Bot size={18} className="text-pink-400" />
-                </div>
-                <div>
-                  <div className="text-sm font-bold text-white flex items-center gap-2">
-                    <span>DubberAI Agent</span>
-                    <span className="text-[10px] font-mono font-normal px-2 py-0.5 rounded-full bg-pink-950 border border-pink-800/60 text-pink-300">
-                      {aiProvider === 'codecraft' ? `CodeCraft (${customModel})` : aiProvider === 'custom' ? `Custom (${customModel})` : `Gemini (${model})`}
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-gray-400">ជំនួយការបកប្រែ & សម្រួលអត្ថន័យវីដេអូ</div>
-                </div>
-              </div>
-              <button 
-                onClick={() => setIsAgentOpen(false)}
-                className="p-2 rounded-full hover:bg-gray-800 text-gray-400 hover:text-white transition"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {/* Suggested Subtitles Banner (if AI returned improved lines) */}
-            {suggestedSubtitles && suggestedSubtitles.length > 0 && (
-              <div className="m-3 p-3 bg-gradient-to-r from-green-950/60 to-emerald-950/40 border border-green-700/50 rounded-2xl flex items-center justify-between">
-                <div className="text-xs text-green-200">
-                  <div className="font-semibold text-green-300">✨ រកឃើញអត្ថបទកែលម្អ ({suggestedSubtitles.length} lines)</div>
-                  <div className="text-[11px] text-green-400/80">តើអ្នកចង់អនុវត្តលើ Timeline វីដេអូដែរឬទេ?</div>
-                </div>
-                <button
-                  onClick={applySuggestedSubtitles}
-                  className="px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white font-bold text-xs rounded-xl shadow transition"
-                >
-                  អនុវត្តលើ Subtitles
-                </button>
-              </div>
-            )}
-
-            {/* Messages Scroll Area */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-[260px] max-h-[50vh]">
-              {agentMessages.length === 0 ? (
-                <div className="text-center py-6 px-4 text-gray-400">
-                  <p className="text-sm font-medium text-gray-200 mb-1">
-                    សួស្តី! ខ្ញុំជា AI Agent ជំនួយការរបស់អ្នក 👋
-                  </p>
-                  <p className="text-xs text-gray-500 leading-relaxed mb-4">
-                    អ្នកអាចសួរនាំ សង្ខេបខ្លឹមសារវីដេអូ ឬឱ្យខ្ញុំជួយកែសម្រួលពាក្យពេចន៍អត្ថបទខ្មែរឱ្យកាន់តែពីរោះ។
-                  </p>
-
-                  {/* Quick Action Chips */}
-                  <div className="flex flex-wrap gap-2 justify-center">
-                    <button
-                      onClick={() => handleSendAgentMessage('ជួយសង្ខេបខ្លឹមសារវីដេអូនេះឱ្យខ្លីងាយយល់បន្តិច')}
-                      className="text-xs px-3 py-1.5 bg-gray-800/80 hover:bg-gray-700 border border-gray-700/60 rounded-xl text-gray-300 transition"
-                    >
-                      📝 សង្ខេបវីដេអូ
-                    </button>
-                    <button
-                      onClick={() => handleSendAgentMessage('ជួយកែសម្រួលពាក្យពេចន៍អត្ថបទខ្មែរទាំងអស់ឱ្យកាន់តែពីរោះ សមរម្យសម្រាប់ការអាន Edge TTS')}
-                      className="text-xs px-3 py-1.5 bg-pink-950/50 hover:bg-pink-900/50 border border-pink-700/40 rounded-xl text-pink-300 transition"
-                    >
-                      ✨ កែលម្អអក្សរខ្មែរឱ្យកាន់តែពីរោះ
-                    </button>
-                    <button
-                      onClick={() => handleSendAgentMessage('ជួយពិនិត្យមើលថាតើមានពាក្យខ្មែរណាខុសអក្ខរាវិរុទ្ធ ឬដាច់ន័យទេ?')}
-                      className="text-xs px-3 py-1.5 bg-gray-800/80 hover:bg-gray-700 border border-gray-700/60 rounded-xl text-gray-300 transition"
-                    >
-                      🔍 ពិនិត្យអក្ខរាវិរុទ្ធ
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                agentMessages.map((msg, i) => (
-                  <div
-                    key={i}
-                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <div
-                      className={`max-w-[85%] rounded-2xl p-3 text-xs leading-relaxed whitespace-pre-wrap ${
-                        msg.role === 'user'
-                          ? 'bg-gradient-to-r from-pink-600 to-rose-600 text-white rounded-tr-sm'
-                          : 'bg-gray-900 border border-gray-800 text-gray-200 rounded-tl-sm'
-                      }`}
-                    >
-                      {msg.content}
-                    </div>
-                  </div>
-                ))
-              )}
-
-              {isAgentThinking && (
-                <div className="flex justify-start">
-                  <div className="bg-gray-900 border border-gray-800 rounded-2xl p-3 text-xs text-gray-400 flex items-center gap-2">
-                    <Loader2 size={13} className="animate-spin text-pink-400" />
-                    <span>AI Agent កំពុងគិត និងវិភាគ...</span>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Chat Input */}
-            <div className="p-3 border-t border-gray-800/80 bg-gray-950 flex items-center gap-2">
-              <input
-                type="text"
-                className="flex-1 bg-gray-900 border border-gray-800 rounded-xl px-3 py-2.5 text-xs text-white placeholder-gray-500 outline-none focus:border-pink-500 transition"
-                placeholder="សួរអ្វីមួយទៅកាន់ AI Agent..."
-                value={agentInput}
-                onChange={(e) => setAgentInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSendAgentMessage(agentInput);
-                  }
-                }}
-              />
-              <button
-                disabled={!agentInput.trim() || isAgentThinking}
-                onClick={() => handleSendAgentMessage(agentInput)}
-                className="p-2.5 bg-pink-600 hover:bg-pink-500 disabled:opacity-40 text-white rounded-xl transition shrink-0"
-              >
-                <Send size={15} />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
