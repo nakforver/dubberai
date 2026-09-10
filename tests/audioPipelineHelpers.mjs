@@ -10,5 +10,6 @@ export const buildAndValidateSegments = {
   validateSubtitleLines: helpers.validateSubtitleLines,
   mergeTranslatedSubtitleLine: helpers.mergeTranslatedSubtitleLine,
   validateExportAudioMetadata: helpers.validateExportAudioMetadata,
-  buildFinalAudioMap: helpers.buildFinalAudioMap
+  buildFinalAudioMap: helpers.buildFinalAudioMap,
+  normalizeSubtitleTimeline: helpers.normalizeSubtitleTimeline
 };

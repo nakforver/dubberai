@@ -12,6 +12,6 @@ fs.mkdirSync(path.dirname(temporaryPath), { recursive: true });
 fs.writeFileSync(
   temporaryPath,
   source.slice(0, endpointIndex) +
-    '\nexport { parseTimestamp, buildRenderedAudioSegments, validateSegmentTimeline, escapeFFmpegFilterPath, buildSubtitleVideoFilter, validateSubtitleLines, mergeTranslatedSubtitleLine, validateExportAudioMetadata, buildFinalAudioMap };\n'
+    '\nexport { parseTimestamp, buildRenderedAudioSegments, validateSegmentTimeline, escapeFFmpegFilterPath, buildSubtitleVideoFilter, validateSubtitleLines, mergeTranslatedSubtitleLine, validateExportAudioMetadata, buildFinalAudioMap, normalizeSubtitleTimeline };\n'
 );
 execFileSync('npx', ['esbuild', temporaryPath, '--bundle', '--platform=node', '--format=cjs', `--outfile=${outputPath}`], { stdio: 'inherit' });

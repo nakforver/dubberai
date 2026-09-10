@@ -110,10 +110,10 @@ function formatSeconds(seconds: number): string {
 }
 
 function formatTimelineTimestamp(seconds: number): string {
-  const safeSeconds = Math.max(0, seconds);
-  const hours = Math.floor(safeSeconds / 3600);
-  const minutes = Math.floor((safeSeconds % 3600) / 60);
-  const remaining = safeSeconds % 60;
+  const rounded = Math.max(0, Math.round(seconds * 1000) / 1000);
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const remaining = rounded % 60;
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, '0')}:${remaining.toFixed(3).padStart(6, '0')}`
     : `${minutes}:${remaining.toFixed(3).padStart(6, '0')}`;
@@ -786,20 +786,13 @@ if (activeModel === 'amazon') {
          }
          if (currentLine) originalLines.push(currentLine);
          
-         // Helper to convert float seconds to M:SS.S
-         const formatTimestamp = (secStr) => {
-             const secFloat = parseFloat(secStr);
-             const mins = Math.floor(secFloat / 60);
-             const secs = secFloat % 60;
-             return `${mins}:${secs.toFixed(1).padStart(4, '0')}`;
-         };
-         
-         originalLines = validateSubtitleLines(originalLines.map(line => ({
+         const rawLines = originalLines.map(line => ({
              id: line.id,
-             start: formatTimestamp(line.start),
-             end: formatTimestamp(line.end),
+             start: line.start,
+             end: line.end,
              text: line.text
-         })));
+         }));
+         originalLines = validateSubtitleLines(normalizeSubtitleTimeline(rawLines));
          
          if (originalLines.length === 0) {
              throw new Error("AWS Transcribe មិនអាចស្គាល់សំឡេងបានទេ (No speech detected). អាចដោយសារវីដេអូគ្មានសំឡេង ឬប្រើភាសាដែលប្រព័ន្ធមិនស្គាល់។");
@@ -1023,7 +1016,8 @@ Do not output an empty array unless there is absolutely no speech.` },
         }
       }
 
-      lines = validateSubtitleLines(lines);
+      const normalizedLines = normalizeSubtitleTimeline(lines);
+      const validatedLines = validateSubtitleLines(normalizedLines);
       
       // Clean up
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
@@ -1034,8 +1028,7 @@ Do not output an empty array unless there is absolutely no speech.` },
         console.error('Failed to delete from Gemini', e);
       }
 
-      const normalizedLines = normalizeSubtitleTimeline(lines);
-      jobs.set(jobId, { status: 'done', progress: 100, lines: normalizedLines });
+      jobs.set(jobId, { status: 'done', progress: 100, lines: validatedLines });
     } catch (error: any) {
       console.error('Transcription error:', error);
       let errorMessage = error.message;

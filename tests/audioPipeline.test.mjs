@@ -74,6 +74,16 @@ test('validates subtitle timing and preserves identity and timing during transla
     ]),
     /Invalid end timestamp at subtitle index 0/
   );
+
+  const normalizedTimeline = buildAndValidateSegments.normalizeSubtitleTimeline([
+    { id: '1', start: '0:50.0', end: '0:55.0', text: 'Line 1' },
+    { id: '4', start: '0:57.2', end: '0:57.2', text: 'Zero duration line' },
+    { id: '5', start: '1:02.0', end: '1:05.0', text: 'Line 5' }
+  ]);
+  assert.equal(normalizedTimeline[1].start, '0:57.200');
+  assert.equal(normalizedTimeline[1].end, '1:02.000');
+  const validNormalized = buildAndValidateSegments.validateSubtitleLines(normalizedTimeline);
+  assert.equal(validNormalized.length, 3);
 });
 
 test('validates export metadata and selects the correct final FFmpeg audio input', () => {
