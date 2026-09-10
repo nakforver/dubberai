@@ -22,11 +22,33 @@ function escapeFFmpegFilterPath(value: string): string {
     .replace(/:/g, '\\:');
 }
 
+function formatKhmerSubtitleText(text: string): string {
+  if (!text) return '';
+  if (!/[\u1780-\u17FF]/.test(text)) return text;
+  try {
+    const clean = text.replace(/\u200B+/g, '');
+    const segmenter = new Intl.Segmenter('km', { granularity: 'word' });
+    const segments = [...segmenter.segment(clean)].map(s => s.segment);
+    let result = '';
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      result += seg;
+      const next = segments[i + 1];
+      if (next && !/\s/.test(seg) && !/\s/.test(next)) {
+        result += '\u200B';
+      }
+    }
+    return result;
+  } catch (e) {
+    return text;
+  }
+}
+
 function buildSubtitleVideoFilter(srtPath: string): string {
   const fontsDir = path.resolve(process.cwd(), 'fonts');
   return (
     `subtitles='${escapeFFmpegFilterPath(srtPath)}':fontsdir='${fontsDir}'` +
-    `:force_style='FontName=Noto Sans Khmer,FontSize=24,BorderStyle=1,Outline=2,Shadow=0,MarginV=40'`
+    `:force_style='FontName=Noto Sans Khmer,FontSize=24,BorderStyle=1,Outline=2,Shadow=0,MarginV=40,MarginL=25,MarginR=25,WrapStyle=0'`
   );
 }
 
@@ -1379,6 +1401,21 @@ const hash = crypto.createHash('sha256');
             fs.copyFileSync(finalSrtPath, srtWithExt);
             finalSrtPath = srtWithExt;
           } catch (e) {}
+        }
+        if (finalSrtPath && fs.existsSync(finalSrtPath)) {
+          try {
+            const rawContent = fs.readFileSync(finalSrtPath, 'utf8');
+            const srtLines = rawContent.split(/\r?\n/);
+            const formattedSrt = srtLines.map(line => {
+              if (/^\d+$/.test(line.trim()) || line.includes('-->')) {
+                return line;
+              }
+              return formatKhmerSubtitleText(line);
+            }).join('\n');
+            fs.writeFileSync(finalSrtPath, formattedSrt, 'utf8');
+          } catch (e) {
+            console.error('Failed to format subtitle line wrapping:', e);
+          }
         }
 
         if (hasSubtitles) {

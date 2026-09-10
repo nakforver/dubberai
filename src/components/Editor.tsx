@@ -451,8 +451,31 @@ const videoRef = useRef<HTMLVideoElement>(null);
         return `${h}:${m}:${s},${ms}`;
       };
 
+      const formatKhmerSubtitleText = (text: string): string => {
+        if (!text) return '';
+        if (!/[\u1780-\u17FF]/.test(text)) return text;
+        try {
+          const clean = text.replace(/\u200B+/g, '');
+          const segmenter = new Intl.Segmenter('km', { granularity: 'word' });
+          const segments = [...segmenter.segment(clean)].map(s => s.segment);
+          let result = '';
+          for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            result += seg;
+            const next = segments[i + 1];
+            if (next && !/\s/.test(seg) && !/\s/.test(next)) {
+              result += '\u200B';
+            }
+          }
+          return result;
+        } catch (e) {
+          return text;
+        }
+      };
+
       const srtContent = exportLines.map((line, index) => {
-        return `${index + 1}\n${toSrtTime(line.start)} --> ${toSrtTime(line.end)}\n${line.text}\n`;
+        const text = formatKhmerSubtitleText(line.text);
+        return `${index + 1}\n${toSrtTime(line.start)} --> ${toSrtTime(line.end)}\n${text}\n`;
       }).join('\n');
 
       const baseName = videoFile?.name.replace(/\.[^/.]+$/, "") || 'video';
