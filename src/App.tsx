@@ -20,6 +20,10 @@ export default function App() {
   const [awsS3Bucket, setAwsS3Bucket] = useState(localStorage.getItem('aws_s3_bucket') || '');
   const [workflow, setWorkflow] = useState(localStorage.getItem('transcribe_workflow') || 'gemini');
   const [model, setModel] = useState(localStorage.getItem('gemini_model') || 'gemini-2.5-flash');
+  const [aiProvider, setAiProvider] = useState(localStorage.getItem('ai_provider') || 'gemini');
+  const [customApiKey, setCustomApiKey] = useState(localStorage.getItem('custom_api_key') || '');
+  const [customBaseUrl, setCustomBaseUrl] = useState(localStorage.getItem('custom_base_url') || 'https://codecraftapi.com/v1');
+  const [customModel, setCustomModel] = useState(localStorage.getItem('custom_model') || 'claude-sonnet-5');
   const [voice, setVoice] = useState<'Piseth' | 'Sreymom'>('Piseth');
   const [volume, setVolume] = useState(90);
 
@@ -56,6 +60,22 @@ export default function App() {
     setModel(m);
     localStorage.setItem('gemini_model', m);
   };
+  const saveAiProvider = (p: string) => {
+    setAiProvider(p);
+    localStorage.setItem('ai_provider', p);
+  };
+  const saveCustomApiKey = (k: string) => {
+    setCustomApiKey(k);
+    localStorage.setItem('custom_api_key', k);
+  };
+  const saveCustomBaseUrl = (u: string) => {
+    setCustomBaseUrl(u);
+    localStorage.setItem('custom_base_url', u);
+  };
+  const saveCustomModel = (m: string) => {
+    setCustomModel(m);
+    localStorage.setItem('custom_model', m);
+  };
 
   return (
     <div className="h-[100dvh] bg-black flex justify-center selection:bg-pink-500/30">
@@ -79,6 +99,10 @@ export default function App() {
             voice={voice}
             workflow={workflow}
             model={model}
+            aiProvider={aiProvider}
+            customApiKey={customApiKey}
+            customBaseUrl={customBaseUrl}
+            customModel={customModel}
           />
         )}
         {currentView === 'settings' && (
@@ -102,6 +126,14 @@ export default function App() {
             setVoice={setVoice}
             volume={volume}
             setVolume={setVolume}
+            aiProvider={aiProvider}
+            setAiProvider={saveAiProvider}
+            customApiKey={customApiKey}
+            setCustomApiKey={saveCustomApiKey}
+            customBaseUrl={customBaseUrl}
+            setCustomBaseUrl={saveCustomBaseUrl}
+            customModel={customModel}
+            setCustomModel={saveCustomModel}
           />
         )}
       </div>

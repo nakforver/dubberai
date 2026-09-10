@@ -13,5 +13,8 @@ export const buildAndValidateSegments = {
   mergeTranslatedSubtitleLine: helpers.mergeTranslatedSubtitleLine,
   validateExportAudioMetadata: helpers.validateExportAudioMetadata,
   buildFinalAudioMap: helpers.buildFinalAudioMap,
-  normalizeSubtitleTimeline: helpers.normalizeSubtitleTimeline
+  normalizeSubtitleTimeline: helpers.normalizeSubtitleTimeline,
+  cleanJsonResponse: helpers.cleanJsonResponse,
+  callOpenAiCompatibleChat: helpers.callOpenAiCompatibleChat,
+  translateSubtitleLinesWithAI: helpers.translateSubtitleLinesWithAI
 };
