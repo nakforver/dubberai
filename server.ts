@@ -128,7 +128,7 @@ function normalizeSubtitleTimeline(lines: any[]): any[] {
         console.warn(`[TIMELINE] Dropping subtitle ${index + 1}: invalid start timestamp`);
         return null;
       }
-      if (end === null || end <= start) {
+      if (end === null || end <= start || end - start < 0.2) {
         const nextStart = parseTimestamp(String(lines[index + 1]?.start ?? ''));
         end = nextStart !== null && nextStart > start ? nextStart : start + 0.75;
         console.warn(
@@ -287,7 +287,8 @@ async function probeAudio(path: string): Promise<{ duration: number; sampleRate:
 
 async function buildRenderedAudioSegments(
   files: Express.Multer.File[],
-  metadata: AudioSegmentMetadata[]
+  metadata: AudioSegmentMetadata[],
+  videoDuration?: number
 ): Promise<RenderedAudioSegment[]> {
   const audioFiles = files
     .filter((file) => file.fieldname.startsWith('audio_'))
@@ -358,6 +359,9 @@ async function buildRenderedAudioSegments(
       const gapToNext = nextStarts[0] - startSeconds;
       const availableFromGap = Math.max(sourceDuration, gapToNext - 0.05);
       availableDuration = Math.max(availableDuration, availableFromGap);
+    } else if (videoDuration !== undefined && videoDuration > startSeconds) {
+      const gapToEnd = Math.max(sourceDuration, videoDuration - startSeconds - 0.05);
+      availableDuration = Math.max(availableDuration, gapToEnd);
     }
     if (probed.duration <= availableDuration) {
       renderedSegments.push({
@@ -1240,7 +1244,7 @@ const hash = crypto.createHash('sha256');
           throw new Error('Export validation failed: invalid video duration');
         }
 
-        const renderedSegments = await buildRenderedAudioSegments(files, audioMetadata);
+        const renderedSegments = await buildRenderedAudioSegments(files, audioMetadata, videoDuration);
         validateSegmentTimeline(renderedSegments, videoDuration);
         for (const segment of renderedSegments) {
           console.log(

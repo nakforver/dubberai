@@ -189,6 +189,16 @@ test('preserves intentional source overlap while rejecting TTS overrun', async (
   const khmerSegments = await buildAndValidateSegments.build(khmerLongTts.files, khmerMetadata);
   assert.equal(khmerSegments.length, 2);
   buildAndValidateSegments.validate(khmerSegments, 70);
+
+  // The final segment in a video should use the remaining video duration
+  const finalSegmentTts = await createSegments([{ ttsDuration: 1.752 }]);
+  const finalSegmentMetadata = [
+    { key: 'audio_0', start: '00:00:58.000', end: '00:00:58.009' }
+  ];
+  const finalSegments = await buildAndValidateSegments.build(finalSegmentTts.files, finalSegmentMetadata, 65);
+  assert.equal(finalSegments.length, 1);
+  assert.equal(finalSegments[0].rate, 1);
+  buildAndValidateSegments.validate(finalSegments, 65);
 });
 
 test('builds an FFmpeg filter that burns SRT subtitles with Khmer fonts', () => {
