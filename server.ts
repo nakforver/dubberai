@@ -51,9 +51,9 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const MAX_ALLOWED_TTS_OVERSPEECH = 0.25;
 // Khmer TTS can be substantially longer than very short source subtitles.
-// Allow auto-fitting up to 2.5x total tempo; FFmpeg's atempo filter is applied
+// Allow auto-fitting up to 2.75x total tempo; FFmpeg's atempo filter is applied
 // as a chain when the requested rate is above its single-filter limit of 2x.
-const MAX_TTS_SPEED_INCREASE = 1.5;
+const MAX_TTS_SPEED_INCREASE = 1.75;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
@@ -348,7 +348,17 @@ async function buildRenderedAudioSegments(
       }
     }
 
-    const availableDuration = sourceDuration + MAX_ALLOWED_TTS_OVERSPEECH;
+    const nextStarts = metadata
+      .map((m) => parseTimestamp(m?.start))
+      .filter((s): s is number => s !== null && s > startSeconds)
+      .sort((a, b) => a - b);
+
+    let availableDuration = sourceDuration + MAX_ALLOWED_TTS_OVERSPEECH;
+    if (nextStarts.length > 0) {
+      const gapToNext = nextStarts[0] - startSeconds;
+      const availableFromGap = Math.max(sourceDuration, gapToNext - 0.05);
+      availableDuration = Math.max(availableDuration, availableFromGap);
+    }
     if (probed.duration <= availableDuration) {
       renderedSegments.push({
         key: file.fieldname,

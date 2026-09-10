@@ -176,6 +176,19 @@ test('preserves intentional source overlap while rejecting TTS overrun', async (
     () => buildAndValidateSegments.build(overrun.files, overrunMetadata),
     /TTS audio is too long/
   );
+
+  // Khmer TTS can be longer than short subtitle lines (e.g. 2.232s audio on a 0.6s line)
+  const khmerLongTts = await createSegments([
+    { ttsDuration: 2.232 },
+    { ttsDuration: 1.5 }
+  ]);
+  const khmerMetadata = [
+    { key: 'audio_0', start: '00:00:57.200', end: '00:00:57.801' },
+    { key: 'audio_1', start: '00:01:00.000', end: '00:01:02.000' }
+  ];
+  const khmerSegments = await buildAndValidateSegments.build(khmerLongTts.files, khmerMetadata);
+  assert.equal(khmerSegments.length, 2);
+  buildAndValidateSegments.validate(khmerSegments, 70);
 });
 
 test('builds an FFmpeg filter that burns SRT subtitles with Khmer fonts', () => {
