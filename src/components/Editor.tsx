@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { ArrowLeft, Music, LayoutGrid, MoreVertical, Play, Pause, Mic, FileAudio, Download, CheckSquare, Square, Volume2, CheckCircle2, Loader2 } from 'lucide-react';
-import { ViewState, SubtitleLine } from '../types';
+import { ArrowLeft, Music, LayoutGrid, MoreVertical, Play, Pause, Mic, FileAudio, Download, CheckSquare, Square, Volume2, CheckCircle2, Loader2, Scissors, Upload, Sparkles } from 'lucide-react';
+import { ViewState, SubtitleLine, CharacterProfile } from '../types';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
@@ -36,6 +36,35 @@ export default function Editor({ onNavigate, videoFile, apiKey, awsAccessKeyId, 
   const [serverVideoFileId, setServerVideoFileId] = useState<string>('');
   const [masterVoiceBase64, setMasterVoiceBase64] = useState<string | null>(null);
   const masterVoiceRef = useRef<string | null>(null);
+
+  const [characters, setCharacters] = useState<CharacterProfile[]>([
+    {
+      id: 'char_female',
+      name: 'តួស្រី (ដុងយី / Female)',
+      gender: 'female',
+      voiceSource: 'clean_ai',
+      referenceAudioBase64: null,
+      audioPreviewUrl: null
+    },
+    {
+      id: 'char_male',
+      name: 'តួប្រុស (ព្រះរាជា / Male)',
+      gender: 'male',
+      voiceSource: 'clean_ai',
+      referenceAudioBase64: null,
+      audioPreviewUrl: null
+    }
+  ]);
+  const charactersRef = useRef<CharacterProfile[]>(characters);
+  useEffect(() => {
+    charactersRef.current = characters;
+  }, [characters]);
+
+  const [extractingCharId, setExtractingCharId] = useState<string | null>(null);
+  const [playingCharAudioId, setPlayingCharAudioId] = useState<string | null>(null);
+  const charAudioPlayerRef = useRef<HTMLAudioElement | null>(null);
+
+  const fileInputRefs = useRef<{ [id: string]: HTMLInputElement | null }>({});
   
   // Keep track of currently generating audios
   const [generatingLines, setGeneratingLines] = useState<Set<string>>(new Set());
@@ -216,6 +245,29 @@ const videoRef = useRef<HTMLVideoElement>(null);
           setLines(newLines);
           // Keep ref synchronized immediately for MAGIC PROCESS.
           linesRef.current = newLines;
+          if (job.masterVoices) {
+            setCharacters(prev => prev.map(c => {
+              if (c.gender === 'female' && job.masterVoices?.female) {
+                return {
+                  ...c,
+                  voiceSource: 'video',
+                  referenceAudioBase64: job.masterVoices.female,
+                  audioPreviewUrl: `data:audio/wav;base64,${job.masterVoices.female}`,
+                  videoTime: 'Auto'
+                };
+              }
+              if (c.gender === 'male' && job.masterVoices?.male) {
+                return {
+                  ...c,
+                  voiceSource: 'video',
+                  referenceAudioBase64: job.masterVoices.male,
+                  audioPreviewUrl: `data:audio/wav;base64,${job.masterVoices.male}`,
+                  videoTime: 'Auto'
+                };
+              }
+              return c;
+            }));
+          }
           if (job.masterVoiceBase64) {
             setMasterVoiceBase64(job.masterVoiceBase64);
             masterVoiceRef.current = job.masterVoiceBase64;
@@ -243,6 +295,99 @@ const videoRef = useRef<HTMLVideoElement>(null);
     }
   };
 
+  const playCharAudio = (charId: string, url: string) => {
+    if (playingCharAudioId === charId && charAudioPlayerRef.current) {
+      charAudioPlayerRef.current.pause();
+      setPlayingCharAudioId(null);
+      return;
+    }
+    if (charAudioPlayerRef.current) {
+      charAudioPlayerRef.current.pause();
+    }
+    const audio = new Audio(url);
+    charAudioPlayerRef.current = audio;
+    setPlayingCharAudioId(charId);
+    audio.onended = () => setPlayingCharAudioId(null);
+    audio.onerror = () => setPlayingCharAudioId(null);
+    audio.play().catch(() => setPlayingCharAudioId(null));
+  };
+
+  const handleExtractFromVideo = async (charId: string) => {
+    try {
+      if (!serverVideoFileId) {
+        alert('សូម Upload វីដេអូ ឬរង់ចាំការ Upload រួចរាល់សិន!');
+        return;
+      }
+      setExtractingCharId(charId);
+      const currentTime = videoRef.current?.currentTime || 0;
+      const res = await fetch('/api/extract-character-voice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileId: serverVideoFileId,
+          startTime: currentTime,
+          duration: 4.0
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Extract voice failed (${res.status})`);
+      }
+
+      const data = await res.json();
+      const previewUrl = `data:audio/wav;base64,${data.audioBase64}`;
+      const timeStr = `${Math.floor(currentTime / 60)}:${(currentTime % 60).toFixed(1).padStart(4, '0')}`;
+
+      setCharacters(prev => prev.map(c => c.id === charId ? {
+        ...c,
+        voiceSource: 'video',
+        referenceAudioBase64: data.audioBase64,
+        audioPreviewUrl: previewUrl,
+        videoTime: timeStr
+      } : c));
+
+      playCharAudio(charId, previewUrl);
+    } catch (err: any) {
+      console.error('Failed to extract voice from video:', err);
+      alert('បរាជ័យក្នុងការកាត់សំឡេងពីវីដេអូ: ' + err.message);
+    } finally {
+      setExtractingCharId(null);
+    }
+  };
+
+  const handleUploadVoiceFile = (charId: string, file: File) => {
+    const previewUrl = URL.createObjectURL(file);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const b64 = dataUrl.split(',')[1];
+      setCharacters(prev => prev.map(c => c.id === charId ? {
+        ...c,
+        voiceSource: 'upload',
+        referenceAudioBase64: b64,
+        audioPreviewUrl: previewUrl,
+        videoTime: undefined
+      } : c));
+      playCharAudio(charId, previewUrl);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSetCleanAI = (charId: string) => {
+    if (charAudioPlayerRef.current) {
+      charAudioPlayerRef.current.pause();
+    }
+    setPlayingCharAudioId(null);
+    setCharacters(prev => prev.map(c => c.id === charId ? {
+      ...c,
+      voiceSource: 'clean_ai',
+      referenceAudioBase64: null,
+      audioPreviewUrl: null,
+      videoTime: undefined
+    } : c));
+  };
+
   const toggleSelectAll = () => {
     const allSelected = lines.length > 0 && lines.every(l => l.selected);
     setLines(lines.map(l => ({ ...l, selected: !allSelected })));
@@ -262,6 +407,10 @@ const videoRef = useRef<HTMLVideoElement>(null);
       });
 
       const currentLine = linesRef.current.find(l => l.id === lineId);
+      const lineGender: 'female' | 'male' = (currentLine?.gender === 'male') ? 'male' : 'female';
+      const char = charactersRef.current.find(c => c.gender === lineGender);
+      const charRefAudio = char?.referenceAudioBase64 || null;
+
       const res = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -273,8 +422,8 @@ const videoRef = useRef<HTMLVideoElement>(null);
           end: currentLine?.end,
           startTime: currentLine?.start,
           endTime: currentLine?.end,
-          gender: currentLine?.gender || 'female',
-          referenceAudioBase64: masterVoiceRef.current
+          gender: lineGender,
+          referenceAudioBase64: charRefAudio
         })
       });
 
@@ -714,6 +863,132 @@ const videoRef = useRef<HTMLVideoElement>(null);
         )}
       </div>
 
+      {/* Character Voices Control Panel (គ្រប់គ្រងសំឡេងតួអង្គដើម) */}
+      <div className="bg-gradient-to-r from-gray-950 via-[#131122] to-gray-950 border-b border-gray-800 p-3 shrink-0">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs sm:text-sm font-bold text-pink-400">🎭 សំឡេងតួអង្គដើម (Character Voices Clone)</span>
+            <span className="text-[10px] text-gray-400 hidden sm:inline">កាត់ផ្ទាល់ពីវីដេអូ ឬ Upload សំឡេងស្អាត</span>
+          </div>
+          <span className="text-[10px] text-gray-500 hidden sm:inline">VoxCPM2 Neural Cloning</span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          {characters.map((char) => (
+            <div
+              key={char.id}
+              className={`rounded-xl p-2.5 border transition-all ${
+                char.gender === 'female'
+                  ? 'bg-pink-950/20 border-pink-900/40 hover:border-pink-800/60'
+                  : 'bg-blue-950/20 border-blue-900/40 hover:border-blue-800/60'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5 font-medium text-xs">
+                  <span className="text-base">{char.gender === 'female' ? '👩' : '👨'}</span>
+                  <span className={char.gender === 'female' ? 'text-pink-300 font-semibold' : 'text-blue-300 font-semibold'}>
+                    {char.name}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1 text-[10px]">
+                  {char.voiceSource === 'video' && (
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-700/50 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                      ពីវីដេអូ {char.videoTime && `(${char.videoTime})`}
+                    </span>
+                  )}
+                  {char.voiceSource === 'upload' && (
+                    <span className="px-1.5 py-0.5 rounded bg-blue-950/80 text-blue-300 border border-blue-700/50 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+                      ឯកសារផ្ទាល់
+                    </span>
+                  )}
+                  {char.voiceSource === 'clean_ai' && (
+                    <span className="px-1.5 py-0.5 rounded bg-purple-950/80 text-purple-300 border border-purple-700/50 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+                      AI ស្អាត (គ្មាន BGM)
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {char.audioPreviewUrl && (
+                  <button
+                    type="button"
+                    onClick={() => char.audioPreviewUrl && playCharAudio(char.id, char.audioPreviewUrl)}
+                    className={`px-2 py-1 rounded-lg text-[11px] font-medium flex items-center gap-1 transition ${
+                      playingCharAudioId === char.id
+                        ? 'bg-amber-600 text-white animate-pulse'
+                        : 'bg-gray-800 hover:bg-gray-700 text-gray-200'
+                    }`}
+                    title="ចុចដើម្បីស្តាប់គំរូសំឡេងតួអង្គ"
+                  >
+                    {playingCharAudioId === char.id ? <Pause size={12} /> : <Play size={12} />}
+                    <span>{playingCharAudioId === char.id ? 'ផ្អាក' : 'ស្តាប់គំរូ'}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  disabled={extractingCharId === char.id || !serverVideoFileId}
+                  onClick={() => handleExtractFromVideo(char.id)}
+                  className={`px-2 py-1 rounded-lg text-[11px] font-medium flex items-center gap-1 transition ${
+                    extractingCharId === char.id
+                      ? 'bg-gray-800 text-gray-500 cursor-wait'
+                      : char.gender === 'female'
+                        ? 'bg-pink-900/50 hover:bg-pink-800/80 text-pink-200 border border-pink-700/40'
+                        : 'bg-blue-900/50 hover:bg-blue-800/80 text-blue-200 border border-blue-700/40'
+                  }`}
+                  title="កាត់សំឡេងតួអង្គ 4 វិនាទី ពីវិនាទីវីដេអូបច្ចុប្បន្ន"
+                >
+                  {extractingCharId === char.id ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Scissors size={12} />
+                  )}
+                  <span>{extractingCharId === char.id ? 'កំពុងកាត់...' : '✂️ កាត់ពីវីដេអូត្រង់នេះ'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => fileInputRefs.current[char.id]?.click()}
+                  className="px-2 py-1 rounded-lg text-[11px] font-medium bg-gray-800/80 hover:bg-gray-700 text-gray-300 border border-gray-700/40 flex items-center gap-1 transition"
+                  title="Upload ឯកសារសំឡេង MP3/WAV របស់តួអង្គ"
+                >
+                  <Upload size={12} />
+                  <span>Upload សំឡេង</span>
+                </button>
+                <input
+                  type="file"
+                  accept="audio/*,video/*"
+                  ref={(el) => { fileInputRefs.current[char.id] = el; }}
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleUploadVoiceFile(char.id, f);
+                  }}
+                />
+
+                {char.voiceSource !== 'clean_ai' && (
+                  <button
+                    type="button"
+                    onClick={() => handleSetCleanAI(char.id)}
+                    className="px-1.5 py-1 rounded-lg text-[10px] text-gray-400 hover:text-purple-300 hover:bg-purple-950/40 transition flex items-center gap-1 ml-auto"
+                    title="ប្រើសំឡេង AI ស្អាតជំនួសវិញ (មិនបាច់មាន BGM)"
+                  >
+                    <Sparkles size={11} />
+                    <span>AI ស្អាត</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Subtitle List Header */}
       <div className="flex items-center justify-between px-4 py-2.5 bg-gray-900 border-y border-gray-800 text-xs text-gray-400 shrink-0">
         <div className="flex items-center gap-3">
@@ -1053,8 +1328,8 @@ const videoRef = useRef<HTMLVideoElement>(null);
                       type="button"
                       title="ចុចដើម្បីប្តូរសំឡេង (ស្រី / ប្រុស)"
                       onClick={() => {
-                        const nextGender = (line.gender === 'female') ? 'male' : 'female';
-                        const updated = lines.map(l => l.id === line.id ? { ...l, gender: nextGender, generated: false, audioUrl: undefined } : l);
+                        const nextGender: 'female' | 'male' = (line.gender === 'female') ? 'male' : 'female';
+                        const updated: SubtitleLine[] = lines.map(l => l.id === line.id ? { ...l, gender: nextGender, generated: false, audioUrl: undefined } : l);
                         setLines(updated);
                         linesRef.current = updated;
                       }}
@@ -1064,7 +1339,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
                           : 'bg-blue-950/70 text-blue-300 border border-blue-700/50 hover:bg-blue-900/80'
                       }`}
                     >
-                      {line.gender === 'female' ? '👩 ស្រី' : '👨 ប្រុស'}
+                      {line.gender === 'female' ? '👩 ស្រី (តួស្រី)' : '👨 ប្រុស (តួប្រុស)'}
                     </button>
                   </div>
                 </div>

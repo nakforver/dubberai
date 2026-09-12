@@ -594,95 +594,109 @@ app.post('/api/upload-chunk', express.raw({ type: '*/*', limit: '500mb' }), asyn
   }
 });
 
-const jobs = new Map<string, { status: string, progress: number, lines?: any[], error?: string, masterVoiceBase64?: string | null }>();
+const jobs = new Map<string, { status: string, progress: number, lines?: any[], error?: string, masterVoiceBase64?: string | null, masterVoices?: { female?: string | null; male?: string | null } }>();
 const exportJobs = new Map<string, { status: string; error?: string; path?: string; progress?: number; }>();
 const exportCache = new Map<string, string>();
 const masterVoiceCache = new Map<string, string>();
+const femaleVoiceCache = new Map<string, string>();
+const maleVoiceCache = new Map<string, string>();
 const uploadedVideos = new Map<string, number>();
 
-async function extractMasterVoice(
+async function extractCharacterVoices(
   filePath: string,
   fileId: string,
   lines: SubtitleLine[]
-): Promise<string | null> {
+): Promise<{ female: string | null; male: string | null }> {
+  const result: { female: string | null; male: string | null } = { female: null, male: null };
   try {
-    if (!fs.existsSync(filePath)) return null;
+    if (!fs.existsSync(filePath)) return result;
 
-    // Filter candidate lines with duration between 2.0s and 8.0s
-    const validCandidates = lines
-      .map((l) => {
+    const femaleCandidates = lines
+      .filter(l => l.gender === 'female')
+      .map(l => {
         const s = parseTimestamp(l.start);
         const e = parseTimestamp(l.end);
         if (s === null || e === null || e <= s) return null;
         return { start: s, end: e, duration: e - s, text: l.text };
       })
-      .filter((c): c is { start: number; end: number; duration: number; text: string } => c !== null && c.duration >= 2.0)
+      .filter((c): c is { start: number; end: number; duration: number; text: string } => c !== null && c.duration >= 1.8)
       .slice(0, 10);
 
-    const masterPath = path.join(os.tmpdir(), `master_ref_${fileId}.wav`);
+    const maleCandidates = lines
+      .filter(l => l.gender === 'male')
+      .map(l => {
+        const s = parseTimestamp(l.start);
+        const e = parseTimestamp(l.end);
+        if (s === null || e === null || e <= s) return null;
+        return { start: s, end: e, duration: e - s, text: l.text };
+      })
+      .filter((c): c is { start: number; end: number; duration: number; text: string } => c !== null && c.duration >= 1.8)
+      .slice(0, 10);
 
-    let bestCandidate: { start: number; dur: number } | null = null;
-    let highestPeak = -999;
+    async function extractBest(candidates: typeof femaleCandidates, prefix: string): Promise<string | null> {
+      if (candidates.length === 0) return null;
+      let bestCandidate: { start: number; dur: number } | null = null;
+      let highestPeak = -999;
 
-    if (validCandidates.length === 0) {
-      validCandidates.push({ start: 1.0, end: 6.0, duration: 5.0, text: '' });
-    }
-
-    // Test candidates to find the segment with the strongest audible vocal energy
-    for (const cand of validCandidates) {
-      const testStart = Math.max(0, cand.start);
-      const testDur = Math.min(5.5, Math.max(2.5, cand.duration));
-      const testTmp = path.join(os.tmpdir(), `test_cand_${crypto.randomUUID()}.wav`);
-      try {
-        await execAsync(
-          `ffmpeg -hide_banner -loglevel error -y -ss ${testStart.toFixed(2)} -t ${testDur.toFixed(2)} -i "${filePath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${testTmp}"`
-        );
-        if (fs.existsSync(testTmp) && fs.statSync(testTmp).size > 2000) {
-          const { stdout, stderr } = await execAsync(
-            `ffmpeg -hide_banner -i "${testTmp}" -af "volumedetect" -f null -`
+      for (const cand of candidates) {
+        const testStart = Math.max(0, cand.start);
+        const testDur = Math.min(5.5, Math.max(2.5, cand.duration));
+        const testTmp = path.join(os.tmpdir(), `test_${prefix}_${crypto.randomUUID()}.wav`);
+        try {
+          await execAsync(
+            `ffmpeg -hide_banner -loglevel error -y -ss ${testStart.toFixed(2)} -t ${testDur.toFixed(2)} -i "${filePath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${testTmp}"`
           );
-          const out = (stderr || '') + (stdout || '');
-          const maxMatch = out.match(/max_volume:\s*(-?[\d.]+)\s*dB/);
-          const maxVol = maxMatch ? parseFloat(maxMatch[1]) : -99;
-          
-          if (maxVol > highestPeak) {
-            highestPeak = maxVol;
-            bestCandidate = { start: testStart, dur: testDur };
+          if (fs.existsSync(testTmp) && fs.statSync(testTmp).size > 2000) {
+            const { stdout, stderr } = await execAsync(
+              `ffmpeg -hide_banner -i "${testTmp}" -af "volumedetect" -f null -`
+            );
+            const out = (stderr || '') + (stdout || '');
+            const maxMatch = out.match(/max_volume:\s*(-?[\d.]+)\s*dB/);
+            const maxVol = maxMatch ? parseFloat(maxMatch[1]) : -99;
+            if (maxVol > highestPeak) {
+              highestPeak = maxVol;
+              bestCandidate = { start: testStart, dur: testDur };
+            }
+            if (maxVol > -13) {
+              try { fs.unlinkSync(testTmp); } catch(e) {}
+              break;
+            }
           }
-          // If we found a segment with strong dialogue (max_volume > -12 dB), it's ideal
-          if (maxVol > -12) {
+        } catch (e) {
+        } finally {
+          if (fs.existsSync(testTmp)) {
             try { fs.unlinkSync(testTmp); } catch(e) {}
-            break;
           }
-        }
-      } catch (err) {
-        // ignore probe error for this candidate
-      } finally {
-        if (fs.existsSync(testTmp)) {
-          try { fs.unlinkSync(testTmp); } catch(e) {}
         }
       }
+
+      if (!bestCandidate) return null;
+      const outPath = path.join(os.tmpdir(), `${prefix}_ref_${fileId}.wav`);
+      await execAsync(
+        `ffmpeg -hide_banner -loglevel error -y -ss ${bestCandidate.start.toFixed(2)} -t ${bestCandidate.dur.toFixed(2)} -i "${filePath}" -vn -af "loudnorm=I=-16:TP=-1.5:LRA=11,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-40dB" -acodec pcm_s16le -ar 16000 -ac 1 "${outPath}"`
+      );
+
+      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1500) {
+        const b64 = fs.readFileSync(outPath).toString('base64');
+        console.log(`[CHARACTER VOICE] Extracted ${prefix} voice for ${fileId} at ${bestCandidate.start.toFixed(2)}s (dur=${bestCandidate.dur.toFixed(2)}s, peak=${highestPeak.toFixed(1)}dB)`);
+        return b64;
+      }
+      return null;
     }
 
-    const finalStart = bestCandidate ? bestCandidate.start : 1.0;
-    const finalDur = bestCandidate ? bestCandidate.dur : 5.0;
+    result.female = await extractBest(femaleCandidates, 'female');
+    if (result.female) femaleVoiceCache.set(fileId, result.female);
 
-    // Extract with loudnorm so vocal levels are normalized to studio quality (-16 LUFS, -1.5 dB peak)
-    // and silenceremove trims leading/trailing silence
-    await execAsync(
-      `ffmpeg -hide_banner -loglevel error -y -ss ${finalStart.toFixed(2)} -t ${finalDur.toFixed(2)} -i "${filePath}" -vn -af "loudnorm=I=-16:TP=-1.5:LRA=11,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-40dB" -acodec pcm_s16le -ar 16000 -ac 1 "${masterPath}"`
-    );
+    result.male = await extractBest(maleCandidates, 'male');
+    if (result.male) maleVoiceCache.set(fileId, result.male);
 
-    if (fs.existsSync(masterPath) && fs.statSync(masterPath).size > 1500) {
-      const b64 = fs.readFileSync(masterPath).toString('base64');
-      masterVoiceCache.set(fileId, b64);
-      console.log(`[MASTER VOICE] Extracted high-fidelity master voice for ${fileId} at ${finalStart.toFixed(2)}s (dur=${finalDur.toFixed(2)}s, peak=${highestPeak.toFixed(1)}dB, size=${fs.statSync(masterPath).size} bytes)`);
-      return b64;
-    }
+    if (result.female) masterVoiceCache.set(fileId, result.female);
+    else if (result.male) masterVoiceCache.set(fileId, result.male);
+
   } catch (err) {
-    console.warn('[MASTER VOICE] Extraction failed:', err);
+    console.warn('[CHARACTER VOICE] Extraction failed:', err);
   }
-  return null;
+  return result;
 }
 
 function trackUploadedVideo(fileId: string) {
@@ -709,6 +723,64 @@ app.get('/api/video-exists', (req, res) => {
     trackUploadedVideo(fileId);
   }
   res.json({ exists });
+});
+
+app.post('/api/extract-character-voice', async (req, res) => {
+  try {
+    const { fileId, startTime, duration = 4.0 } = req.body;
+    if (!fileId) {
+      return res.status(400).json({ error: 'fileId is required' });
+    }
+    let mediaPath = path.join(os.tmpdir(), `upload_${fileId}`);
+    if (!fs.existsSync(mediaPath)) {
+      const audioPath = path.join(os.tmpdir(), `audio_${fileId}.mp3`);
+      if (fs.existsSync(audioPath)) {
+        mediaPath = audioPath;
+      }
+    }
+    if (!fs.existsSync(mediaPath)) {
+      const part0 = path.join(os.tmpdir(), `upload_${fileId}_part_0`);
+      if (fs.existsSync(part0)) {
+        let i = 0;
+        const assembled = fs.createWriteStream(mediaPath);
+        while (fs.existsSync(path.join(os.tmpdir(), `upload_${fileId}_part_${i}`))) {
+          const chunkData = fs.readFileSync(path.join(os.tmpdir(), `upload_${fileId}_part_${i}`));
+          assembled.write(chunkData);
+          i++;
+        }
+        assembled.end();
+      }
+    }
+
+    if (!fs.existsSync(mediaPath)) {
+      return res.status(404).json({ error: 'រកមិនឃើញវីដេអូដើមលើម៉ាស៊ីនមេទេ។ សូមជ្រើសរើសបញ្ចូលឯកសារសំឡេង (Upload Audio) ជំនួសវិញ។' });
+    }
+
+    const sStart = Math.max(0, typeof startTime === 'number' ? startTime : (parseTimestamp(startTime) ?? 0));
+    const sDur = Math.max(1.5, Math.min(8.0, Number(duration) || 4.0));
+    const outWav = path.join(os.tmpdir(), `char_${crypto.randomUUID()}.wav`);
+
+    await execAsync(
+      `ffmpeg -hide_banner -loglevel error -y -ss ${sStart.toFixed(2)} -t ${sDur.toFixed(2)} -i "${mediaPath}" -vn -af "loudnorm=I=-16:TP=-1.5:LRA=11,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-40dB" -acodec pcm_s16le -ar 16000 -ac 1 "${outWav}"`
+    );
+
+    if (!fs.existsSync(outWav) || fs.statSync(outWav).size < 1000) {
+      return res.status(400).json({ error: 'កាត់សំឡេងមិនបានសម្រេច។ សូមសាកល្បងវិនាទីផ្សេងទៀត។' });
+    }
+
+    const audioBase64 = fs.readFileSync(outWav).toString('base64');
+    try { fs.unlinkSync(outWav); } catch (e) {}
+
+    return res.json({
+      success: true,
+      audioBase64,
+      startTime: sStart,
+      duration: sDur
+    });
+  } catch (err: any) {
+    console.error('[EXTRACT-VOICE] Error:', err);
+    res.status(500).json({ error: err.message || 'Extract character voice failed' });
+  }
 });
 
 
@@ -1127,11 +1199,11 @@ if (activeModel === 'amazon') {
              await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: s3Key }));
          } catch(e) { console.error('Failed to cleanup S3', e); }
          
-          const masterVoiceBase64 = await extractMasterVoice(filePath, fileId, translatedLines);
+          const masterVoices = await extractCharacterVoices(filePath, fileId, translatedLines);
+          const masterVoiceBase64 = masterVoices.female || masterVoices.male;
           if (fs.existsSync(filePath)) trackUploadedVideo(fileId);
-          if (uploadPath !== filePath && fs.existsSync(uploadPath)) fs.unlinkSync(uploadPath);
           
-          jobs.set(jobId, { status: 'done', progress: 100, lines: translatedLines, masterVoiceBase64 });
+          jobs.set(jobId, { status: 'done', progress: 100, lines: translatedLines, masterVoiceBase64, masterVoices });
           return; // Exit here for Amazon
       }
       
@@ -1284,17 +1356,17 @@ Do not output an empty array unless there is absolutely no speech.` },
       const normalizedLines = normalizeSubtitleTimeline(lines);
       const validatedLines = validateSubtitleLines(normalizedLines);
       
-      // Clean up and extract master reference voice for consistent TTS voice cloning
-      const masterVoiceBase64 = await extractMasterVoice(filePath, fileId, validatedLines);
+      // Clean up and extract character reference voices for consistent TTS voice cloning
+      const masterVoices = await extractCharacterVoices(filePath, fileId, validatedLines);
+      const masterVoiceBase64 = masterVoices.female || masterVoices.male;
       if (fs.existsSync(filePath)) trackUploadedVideo(fileId);
-      if (uploadPath !== filePath && fs.existsSync(uploadPath)) fs.unlinkSync(uploadPath);
       try {
         await currentAi.files.delete({ name: uploadResult.name });
       } catch(e) {
         console.error('Failed to delete from Gemini', e);
       }
 
-      jobs.set(jobId, { status: 'done', progress: 100, lines: validatedLines, masterVoiceBase64 });
+      jobs.set(jobId, { status: 'done', progress: 100, lines: validatedLines, masterVoiceBase64, masterVoices });
     } catch (error: any) {
       console.error('Transcription error:', error);
       let errorMessage = error.message;
@@ -1371,67 +1443,18 @@ app.post('/api/tts', async (req, res) => {
       try {
         let refBase64: string | null = null;
 
-        // Priority 1: Extract the speaker voice for THIS SPECIFIC LINE from original video at [start, end]
-        // This ensures female characters get their female voices cloned, and male characters get their male voices cloned!
-        if (fileId && (start !== undefined || startTime !== undefined)) {
-          let videoPath = path.join(os.tmpdir(), `upload_${fileId}`);
-          if (!fs.existsSync(videoPath)) {
-            // Check if there are chunk files and assemble
-            const part0 = path.join(os.tmpdir(), `upload_${fileId}_part_0`);
-            if (fs.existsSync(part0)) {
-              let i = 0;
-              const assembled = fs.createWriteStream(videoPath);
-              while (fs.existsSync(path.join(os.tmpdir(), `upload_${fileId}_part_${i}`))) {
-                const chunkData = fs.readFileSync(path.join(os.tmpdir(), `upload_${fileId}_part_${i}`));
-                assembled.write(chunkData);
-                i++;
-              }
-              assembled.end();
-            }
-          }
-
-          if (fs.existsSync(videoPath)) {
-            tempRefFile = path.join(os.tmpdir(), `ref_vox_${crypto.randomUUID()}.wav`);
-            const rawStart = start ?? startTime;
-            const rawEnd = end ?? endTime;
-            const parsedStart = typeof rawStart === 'number' ? rawStart : parseTimestamp(rawStart);
-            const parsedEnd = typeof rawEnd === 'number' ? rawEnd : parseTimestamp(rawEnd);
-
-            if (parsedStart !== null && parsedStart >= 0) {
-              const lineDur = (parsedEnd !== null && parsedEnd > parsedStart) ? (parsedEnd - parsedStart) : 3.0;
-              // Target ~3.2s to 5.5s so VoxCPM2 captures sufficient speaker vocal timbre
-              let sStart = parsedStart;
-              let sDur = lineDur;
-              if (lineDur < 3.2) {
-                const padBefore = Math.min(parsedStart, 0.6);
-                sStart = Math.max(0, parsedStart - padBefore);
-                sDur = Math.max(3.2, lineDur + padBefore + 1.2);
-              } else if (lineDur > 6.0) {
-                sDur = 6.0;
-              }
-
-              try {
-                // Use clean loudnorm without silenceremove so vocal audio is never dropped
-                await execAsync(
-                  `ffmpeg -hide_banner -loglevel error -y -ss ${sStart.toFixed(2)} -t ${sDur.toFixed(2)} -i "${videoPath}" -vn -af "loudnorm=I=-16:TP=-1.5:LRA=11" -acodec pcm_s16le -ar 16000 -ac 1 "${tempRefFile}"`
-                );
-                if (fs.existsSync(tempRefFile) && fs.statSync(tempRefFile).size > 4000) {
-                  refBase64 = fs.readFileSync(tempRefFile).toString('base64');
-                  console.log(`[TTS VoxCPM2] Extracted line speaker audio (${rawStart} - ${rawEnd}) at ${sStart.toFixed(2)}s (dur: ${sDur.toFixed(2)}s, size: ${fs.statSync(tempRefFile).size}B)`);
-                }
-              } catch (err) {
-                console.warn('[TTS VoxCPM2] Failed to slice speaker audio from video:', err);
-              }
-            }
-          }
-        }
-
-        // Priority 2: Fallback to client provided reference or master voice if line-specific slice was unavailable
-        if (!refBase64 && typeof referenceAudioBase64 === 'string' && referenceAudioBase64.length > 500) {
+        // Priority 1: Direct reference audio supplied by client (Character Voice or custom audio)
+        if (typeof referenceAudioBase64 === 'string' && referenceAudioBase64.length > 500) {
           refBase64 = referenceAudioBase64;
         }
-        if (!refBase64 && fileId && masterVoiceCache.has(fileId)) {
-          refBase64 = masterVoiceCache.get(fileId) || null;
+
+        // Priority 2: Gender-matched character voice cache from video
+        if (!refBase64 && fileId) {
+          if (gender === 'female' && femaleVoiceCache.has(fileId)) {
+            refBase64 = femaleVoiceCache.get(fileId) || null;
+          } else if (gender === 'male' && maleVoiceCache.has(fileId)) {
+            refBase64 = maleVoiceCache.get(fileId) || null;
+          }
         }
 
         let voxcpmBaseUrl = process.env.VOXCPM_API_URL;
