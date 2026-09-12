@@ -126,7 +126,7 @@ async def clone_voice_json(req: CloneRequest):
                 if is_female_req and ref_pitch > 0 and ref_pitch < 160.0:
                     print(f"[VoxCPM2] Rejecting reference audio for female request: detected pitch is {ref_pitch:.1f}Hz (male timbre). Synthesizing with natural AI female voice.", flush=True)
                     ref_path = None
-                elif is_male_req and ref_pitch > 215.0:
+                elif is_male_req and ref_pitch > 165.0:
                     print(f"[VoxCPM2] Rejecting reference audio for male request: detected pitch is {ref_pitch:.1f}Hz (female timbre). Synthesizing with natural AI male voice.", flush=True)
                     ref_path = None
                 elif ref_max < 0.7 and ref_path:

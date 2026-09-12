@@ -323,18 +323,18 @@ function validateSubtitleLine(value: any, index: number): SubtitleLine {
   const rawSpeakerName = typeof value.speakerName === 'string' ? value.speakerName.trim() : '';
 
   let gender: 'female' | 'male' | undefined = undefined;
-  if (rawGender.includes('female') || rawGender.includes('woman') || rawGender.includes('girl') || rawGender.includes('ស្រី')) {
+  if (rawGender === 'female' || rawGender.includes('female') || rawGender.includes('woman') || rawGender.includes('girl') || rawGender.includes('ស្រី')) {
     gender = 'female';
-  } else if (rawGender.includes('male') || rawGender.includes('man') || rawGender.includes('boy') || rawGender.includes('ប្រុស')) {
+  } else if (rawGender === 'male' || (rawGender.includes('male') && !rawGender.includes('female')) || rawGender.includes('man') || rawGender.includes('boy') || rawGender.includes('ប្រុស')) {
     gender = 'male';
-  } else if (rawSpeakerName.includes('ស្រី') || rawSpeaker.includes('female')) {
+  } else if (rawSpeakerName.includes('ប្រុស') || (rawSpeakerName.includes('male') && !rawSpeakerName.includes('female')) || rawSpeaker.includes('male')) {
+    gender = 'male';
+  } else if (rawSpeakerName.includes('ស្រី') || rawSpeakerName.includes('female') || rawSpeaker.includes('female')) {
     gender = 'female';
-  } else if (rawSpeakerName.includes('ប្រុស') || rawSpeaker.includes('male')) {
-    gender = 'male';
   }
 
-  const speaker = rawSpeaker || (gender === 'male' ? 'speaker_002' : 'speaker_001');
-  const speakerName = rawSpeakerName || (gender === 'male' ? 'Speaker 2 (ប្រុស)' : 'Speaker 1 (ស្រី)');
+  const speaker = gender === 'male' ? 'char_male' : 'char_female';
+  const speakerName = gender === 'male' ? 'តួប្រុស' : 'តួស្រី';
 
   return {
     id,
@@ -407,12 +407,20 @@ function buildFinalAudioMap(
 
 function parseGenderFromLine(l: any): 'female' | 'male' | null {
   const g = String(l?.gender || '').toLowerCase().trim();
-  const name = String(l?.speakerName || l?.speaker || '').toLowerCase().trim();
-  if (g.includes('female') || g.includes('woman') || g.includes('girl') || g.includes('ស្រី') || name.includes('ស្រី') || name.includes('ដុងយី') || name.includes('lady') || name.includes('queen') || name.includes('ព្រះនាង') || name.includes('អគ្គមហេសី')) {
+  if (g === 'female' || g.includes('female') || g.includes('woman') || g.includes('girl') || g.includes('ស្រី')) {
     return 'female';
   }
-  if (g.includes('male') || g.includes('man') || g.includes('boy') || g.includes('ប្រុស') || name.includes('ប្រុស') || name.includes('ស្តេច') || name.includes('king') || name.includes('ព្រះរាជា') || name.includes('soldier') || name.includes('ទាហាន')) {
+  if (g === 'male' || (g.includes('male') && !g.includes('female')) || g.includes('man') || g.includes('boy') || g.includes('ប្រុស')) {
     return 'male';
+  }
+
+  // Fallback to speaker / speakerName only if explicit line gender is absent
+  const name = String(l?.speakerName || l?.speaker || '').toLowerCase().trim();
+  if (name.includes('ប្រុស') || (name.includes('male') && !name.includes('female')) || name.includes('ស្តេច') || name.includes('king') || name.includes('ព្រះរាជា') || name.includes('soldier') || name.includes('ទាហាន') || name.includes('មេទ័ព')) {
+    return 'male';
+  }
+  if (name.includes('ស្រី') || name.includes('female') || name.includes('lady') || name.includes('queen') || name.includes('ព្រះនាង') || name.includes('អគ្គមហេសី') || name.includes('មហេសី') || name.includes('អ្នកម្នាង')) {
+    return 'female';
   }
   return null;
 }
@@ -423,35 +431,24 @@ function validateSubtitleLines(lines: any): SubtitleLine[] {
   }
   const validated = lines.map(validateSubtitleLine);
 
-  // 1. Build map of speakerId -> gender from all explicitly identified lines
-  const speakerGenderMap = new Map<string, 'female' | 'male'>();
-  for (const line of validated) {
-    const explicitGender = parseGenderFromLine(line) || line.gender;
-    if (explicitGender) {
-      line.gender = explicitGender;
-      if (line.speaker && !speakerGenderMap.has(line.speaker)) {
-        speakerGenderMap.set(line.speaker, explicitGender);
-      }
-    }
-  }
-
-  // 2. Consistency pass: ensure consistent gender per speaker, or dialogue scene continuity (NEVER alternating modulo)
   let lastSceneGender: 'female' | 'male' = 'female';
   for (let i = 0; i < validated.length; i++) {
     const l = validated[i];
-    if (l.speaker && speakerGenderMap.has(l.speaker)) {
-      l.gender = speakerGenderMap.get(l.speaker);
-    } else if (!l.gender) {
-      const parsedG = parseGenderFromLine(l);
-      l.gender = parsedG || lastSceneGender;
+    const detectedGender = parseGenderFromLine(l) || l.gender;
+    if (detectedGender === 'female' || detectedGender === 'male') {
+      l.gender = detectedGender;
+      lastSceneGender = detectedGender;
+    } else {
+      l.gender = lastSceneGender;
     }
-    if (l.gender) {
-      lastSceneGender = l.gender;
-    }
-    if (l.gender === 'female' && l.speakerName?.includes('(ប្រុស)')) {
-      l.speakerName = l.speakerName.replace('(ប្រុស)', '(ស្រី)');
-    } else if (l.gender === 'male' && l.speakerName?.includes('(ស្រី)')) {
-      l.speakerName = l.speakerName.replace('(ស្រី)', '(ប្រុស)');
+
+    if (l.gender === 'female') {
+      l.speaker = 'char_female';
+      l.speakerName = 'តួស្រី';
+    } else {
+      l.gender = 'male';
+      l.speaker = 'char_male';
+      l.speakerName = 'តួប្រុស';
     }
   }
 
@@ -478,13 +475,8 @@ function mergeTranslatedSubtitleLine(
   if (rawGender.includes('female') || rawGender.includes('ស្រី')) gender = 'female';
   else if (rawGender.includes('male') || rawGender.includes('ប្រុស')) gender = 'male';
 
-  const speaker = typeof translation?.speaker === 'string' && translation.speaker.trim()
-    ? translation.speaker.trim()
-    : (originalLine.speaker || (gender === 'male' ? 'speaker_002' : 'speaker_001'));
-
-  const speakerName = typeof translation?.speakerName === 'string' && translation.speakerName.trim()
-    ? translation.speakerName.trim()
-    : (originalLine.speakerName || (gender === 'male' ? 'Speaker 2 (ប្រុស)' : 'Speaker 1 (ស្រី)'));
+  const speaker = gender === 'male' ? 'char_male' : 'char_female';
+  const speakerName = gender === 'male' ? 'តួប្រុស' : 'តួស្រី';
 
   return {
     id: originalLine.id,
@@ -772,11 +764,14 @@ function estimateWavPitch(wavPath: string): number {
 
     for (let lag = minLag; lag <= maxLag; lag++) {
       let corr = 0;
+      let count = 0;
       for (let i = 0; i < samples.length - lag; i += 2) {
         corr += (samples[i] * samples[i + lag]);
+        count++;
       }
-      if (corr > maxCorr) {
-        maxCorr = corr;
+      const normCorr = count > 0 ? (corr / count) : 0;
+      if (normCorr > maxCorr) {
+        maxCorr = normCorr;
         peakLag = lag;
       }
     }
@@ -825,8 +820,8 @@ async function extractSpeakerReferenceVoices(
             try { fs.unlinkSync(testTmp); } catch(e) {}
             continue;
           }
-          // Strictly reject female voice pitch (>215Hz) when extracting male voice!
-          if (expectedGender === 'male' && pitch > 215) {
+          // Strictly reject female voice pitch (>165Hz) when extracting male voice!
+          if (expectedGender === 'male' && pitch > 165) {
             console.log(`[SPEAKER VOICE] Skipping candidate for male: detected pitch is ${pitch.toFixed(1)}Hz (female voice)`);
             try { fs.unlinkSync(testTmp); } catch(e) {}
             continue;
@@ -883,7 +878,7 @@ async function extractSpeakerReferenceVoices(
   const speakerGroups = new Map<string, SubtitleLine[]>();
   for (const line of lines) {
     const spkGender = line.gender === 'female' ? 'female' : 'male';
-    const spkId = line.speaker || (spkGender === 'female' ? 'speaker_001' : 'speaker_002');
+    const spkId = line.speaker || (spkGender === 'female' ? 'char_female' : 'char_male');
     if (!speakerGroups.has(spkId)) {
       speakerGroups.set(spkId, []);
     }
@@ -892,8 +887,8 @@ async function extractSpeakerReferenceVoices(
 
   // 2. For each speaker, extract cleanest candidate strictly matching their gender
   for (const [spkId, spkLines] of speakerGroups.entries()) {
-    const spkGender: 'female' | 'male' = spkLines.find(l => l.gender)?.gender || (spkId.endsWith('1') ? 'female' : 'male');
-    const defaultName = spkLines[0]?.speakerName || (spkGender === 'female' ? `Speaker ${spkId.replace('speaker_', '')} (ស្រី)` : `Speaker ${spkId.replace('speaker_', '')} (ប្រុស)`);
+    const spkGender: 'female' | 'male' = spkLines.find(l => l.gender)?.gender || (spkId.includes('female') || spkId.endsWith('1') ? 'female' : 'male');
+    const defaultName = spkLines[0]?.speakerName || (spkGender === 'female' ? 'តួស្រី' : 'តួប្រុស');
 
     const matchingLines = spkLines.filter(l => (l.gender || 'female') === spkGender);
     const cand = await extractCleanestCandidate(matchingLines, spkGender);
@@ -948,6 +943,15 @@ async function extractSpeakerReferenceVoices(
   // 4. Ensure char_female and char_male are present in result for frontend
   const fAudio = femaleVoiceCache.get(fileId) || null;
   const mAudio = maleVoiceCache.get(fileId) || null;
+
+  if (fAudio) {
+    speakerVoiceCache.set(`${fileId}_char_female`, fAudio);
+    speakerVoiceCache.set(`${fileId}_speaker_001`, fAudio);
+  }
+  if (mAudio) {
+    speakerVoiceCache.set(`${fileId}_char_male`, mAudio);
+    speakerVoiceCache.set(`${fileId}_speaker_002`, mAudio);
+  }
 
   result['char_female'] = {
     id: 'char_female',
@@ -1142,7 +1146,10 @@ STRICT RULES:
 14. ALL translated "text" values must be Khmer.
 15. Return ONLY valid JSON.
 16. The output must contain exactly the same structure.
-17. Accurately assign or preserve the "gender" field as "female" or "male" for each dialogue based on the speaker and context. If women/court ladies speak, keep gender as "female". NEVER alternate female and male artificially.
+17. Accurately assign or preserve the "gender" field as "female" or "male" for each dialogue:
+    - Female characters speaking: set gender = "female", speaker = "char_female", speakerName = "តួស្រី"
+    - Male characters speaking: set gender = "male", speaker = "char_male", speakerName = "តួប្រុស"
+    - If both men and women speak in the scene, match EACH sentence to the actual speaker's gender. NEVER mark all dialogues as female, and never mark all dialogues as male!
 
 SOURCE SUBTITLES:
 ${JSON.stringify(chunk)}`
@@ -1578,12 +1585,16 @@ TRANSCRIPTION AND SEGMENTATION RULES:
 10. Continue processing until the END of the audio/video.
 11. If there are pauses or silence, do not invent dialogue during silence.
 12. If multiple people speak, preserve the chronological sequence of their speech.
-13. Perform SPEAKER DIARIZATION: Identify and assign a consistent speaker ID ("speaker_001", "speaker_002", "speaker_003", etc.) and speakerName (e.g. "Speaker 1 (ស្រី)", "Speaker 2 (ស្រី)" or "តួស្រី (ដុងយី)", "តួប្រុស") for each dialogue. Maintain speaker consistency across the video.
-14. VOCAL GENDER IDENTIFICATION (CRITICAL):
-    - Listen closely to the speaker's vocal pitch and timbre, and look at who is speaking in the video scene.
-    - If a woman, court lady, queen, or girl speaks, mark ALL their dialogues as "female".
-    - If a man, king, soldier, or boy speaks, mark ALL their dialogues as "male".
-    - In scenes where women / court ladies are speaking together (such as Dong Yi historical drama), EVERY sentence spoken by a female character MUST be marked "female". NEVER alternate between female and male artificially!
+13. SPEAKER DIARIZATION & CHARACTER IDENTIFICATION:
+    - Identify who is speaking each dialogue line accurately based on the video scene and voices.
+    - For female characters (such as Dong Yi, court ladies, queen, mother, maid, girl): assign speaker "char_female" and speakerName "តួស្រី".
+    - For male characters (such as king, magistrate, officer, soldiers, guard, boy, man): assign speaker "char_male" and speakerName "តួប្រុស".
+14. VOCAL GENDER IDENTIFICATION (CRITICAL - IDENTIFY EACH CHARACTER ACCURATELY):
+    - For EACH spoken dialogue, analyze the speaker's actual voice (vocal pitch and tone) and who is speaking in the video:
+      * When a FEMALE speaks: set gender = "female", speaker = "char_female", speakerName = "តួស្រី".
+      * When a MALE speaks: set gender = "male", speaker = "char_male", speakerName = "តួប្រុស".
+    - If a scene contains a conversation between a male and a female character, EACH sentence MUST accurately match that specific character's gender.
+    - Do NOT mark all sentences as female! Do NOT mark all sentences as male!
     - Every single subtitle object MUST specify gender as exactly "female" or "male".
 15. ALL subtitle text must be translated into natural Khmer (Cambodian).
 16. Do NOT output the original-language transcript.

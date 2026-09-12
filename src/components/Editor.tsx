@@ -265,14 +265,20 @@ const videoRef = useRef<HTMLVideoElement>(null);
           const newLines = job.lines.map((l: any, idx: number) => {
             let lineGender: 'female' | 'male';
             const rawG = String(l.gender || '').toLowerCase().trim();
-            const rawSpk = String(l.speakerName || l.speaker || '').toLowerCase().trim();
             
-            if (rawG.includes('female') || rawG.includes('woman') || rawG.includes('ស្រី') || rawSpk.includes('ស្រី')) {
-              lineGender = 'female';
-            } else if (rawG.includes('male') || rawG.includes('man') || rawG.includes('ប្រុស') || rawSpk.includes('ប្រុស')) {
+            if (rawG === 'male' || (rawG.includes('male') && !rawG.includes('female')) || rawG.includes('man') || rawG.includes('ប្រុស')) {
               lineGender = 'male';
+            } else if (rawG === 'female' || rawG.includes('female') || rawG.includes('woman') || rawG.includes('ស្រី')) {
+              lineGender = 'female';
             } else {
-              lineGender = lastGender;
+              const rawSpk = String(l.speakerName || l.speaker || '').toLowerCase().trim();
+              if (rawSpk.includes('ប្រុស') || (rawSpk.includes('male') && !rawSpk.includes('female'))) {
+                lineGender = 'male';
+              } else if (rawSpk.includes('ស្រី') || rawSpk.includes('female')) {
+                lineGender = 'female';
+              } else {
+                lineGender = lastGender;
+              }
             }
             lastGender = lineGender;
 
