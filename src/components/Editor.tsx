@@ -234,9 +234,9 @@ const videoRef = useRef<HTMLVideoElement>(null);
         }
         
         if (job.status === 'done') {
-          // Automatic 100% video character voice extraction (Female & Male)
-          const femaleAudio = job.masterVoices?.female || (job.speakers ? (Object.values(job.speakers) as any[]).find((s: any) => s.gender === 'female' && s.referenceAudioBase64)?.referenceAudioBase64 : null) || job.masterVoiceBase64 || null;
-          const maleAudio = job.masterVoices?.male || (job.speakers ? (Object.values(job.speakers) as any[]).find((s: any) => s.gender === 'male' && s.referenceAudioBase64)?.referenceAudioBase64 : null) || job.masterVoiceBase64 || null;
+          // Automatic 100% video character voice extraction (Female & Male strictly isolated)
+          const femaleAudio = job.masterVoices?.female || (job.speakers ? (Object.values(job.speakers) as any[]).find((s: any) => s.gender === 'female' && s.referenceAudioBase64)?.referenceAudioBase64 : null) || null;
+          const maleAudio = job.masterVoices?.male || (job.speakers ? (Object.values(job.speakers) as any[]).find((s: any) => s.gender === 'male' && s.referenceAudioBase64)?.referenceAudioBase64 : null) || null;
 
           const autoCharacters: SpeakerProfile[] = [
             {
@@ -245,8 +245,8 @@ const videoRef = useRef<HTMLVideoElement>(null);
               gender: 'female',
               voiceSource: femaleAudio ? 'video' : 'clean_ai',
               referenceAudioBase64: femaleAudio,
-              audioPreviewUrl: femaleAudio ? `data:audio/wav;base64,${femaleAudio}` : null,
-              videoTime: 'Auto'
+              audioPreviewUrl: femaleAudio ? `data:audio/wav;base64,${femaleAudio}` : '/api/sample-voice?gender=female',
+              videoTime: femaleAudio ? 'Auto (វីដេអូ)' : 'Clean AI'
             },
             {
               id: 'char_male',
@@ -254,17 +254,12 @@ const videoRef = useRef<HTMLVideoElement>(null);
               gender: 'male',
               voiceSource: maleAudio ? 'video' : 'clean_ai',
               referenceAudioBase64: maleAudio,
-              audioPreviewUrl: maleAudio ? `data:audio/wav;base64,${maleAudio}` : null,
-              videoTime: 'Auto'
+              audioPreviewUrl: maleAudio ? `data:audio/wav;base64,${maleAudio}` : '/api/sample-voice?gender=male',
+              videoTime: maleAudio ? 'Auto (វីដេអូ)' : 'Clean AI'
             }
           ];
           setCharacters(autoCharacters);
           charactersRef.current = autoCharacters;
-
-          if (job.masterVoiceBase64) {
-            setMasterVoiceBase64(job.masterVoiceBase64);
-            masterVoiceRef.current = job.masterVoiceBase64;
-          }
 
           let lastGender: 'female' | 'male' = 'female';
           const newLines = job.lines.map((l: any, idx: number) => {
@@ -474,9 +469,10 @@ const videoRef = useRef<HTMLVideoElement>(null);
       const lineGender: 'female' | 'male' = (currentLine?.gender === 'male') ? 'male' : 'female';
       const speakerId = currentLine?.speaker || (lineGender === 'male' ? 'char_male' : 'char_female');
 
-      // Match speaker profile by gender automatically
-      const speakerProfile = charactersRef.current.find(c => c.gender === lineGender) || charactersRef.current.find(c => c.id === speakerId);
-      const charRefAudio = speakerProfile?.referenceAudioBase64 || masterVoiceRef.current || null;
+      // Match speaker profile strictly by gender automatically
+      const speakerProfile = charactersRef.current.find(c => c.gender === lineGender && c.id === speakerId) ||
+                             charactersRef.current.find(c => c.gender === lineGender);
+      const charRefAudio = (speakerProfile?.gender === lineGender ? speakerProfile?.referenceAudioBase64 : null) || null;
 
       const res = await fetch('/api/tts', {
         method: 'POST',
@@ -945,21 +941,21 @@ const videoRef = useRef<HTMLVideoElement>(null);
             {(() => {
               const fChar = characters.find(c => c.gender === 'female') || characters[0];
               const isPlayingF = playingCharAudioId === 'char_female';
+              const previewUrl = fChar?.audioPreviewUrl || '/api/sample-voice?gender=female';
               return (
                 <div className="flex items-center gap-1.5 bg-pink-950/60 border border-pink-700/40 px-2.5 py-1 rounded-full text-xs text-pink-200">
                   <span className="font-medium">👩 ស្រី</span>
-                  {fChar?.audioPreviewUrl ? (
-                    <button
-                      type="button"
-                      onClick={() => playCharAudio('char_female', fChar.audioPreviewUrl!)}
-                      className="ml-0.5 p-0.5 hover:text-white transition text-pink-400"
-                      title="ស្តាប់គំរូសំឡេងស្រី"
-                    >
-                      {isPlayingF ? <Pause size={12} className="text-amber-400 animate-pulse" /> : <Play size={12} />}
-                    </button>
-                  ) : (
-                    <span className="text-[10px] text-pink-400/60 font-mono">Auto</span>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => playCharAudio('char_female', previewUrl)}
+                    className="ml-0.5 p-0.5 hover:text-white transition text-pink-400 cursor-pointer"
+                    title="ស្តាប់គំរូសំឡេងស្រី"
+                  >
+                    {isPlayingF ? <Pause size={12} className="text-amber-400 animate-pulse" /> : <Play size={12} />}
+                  </button>
+                  <span className="text-[10px] text-pink-400/80 font-mono">
+                    {fChar?.referenceAudioBase64 ? 'វីដេអូ' : 'AI'}
+                  </span>
                 </div>
               );
             })()}
@@ -968,21 +964,21 @@ const videoRef = useRef<HTMLVideoElement>(null);
             {(() => {
               const mChar = characters.find(c => c.gender === 'male') || characters[1];
               const isPlayingM = playingCharAudioId === 'char_male';
+              const previewUrl = mChar?.audioPreviewUrl || '/api/sample-voice?gender=male';
               return (
                 <div className="flex items-center gap-1.5 bg-blue-950/60 border border-blue-700/40 px-2.5 py-1 rounded-full text-xs text-blue-200">
                   <span className="font-medium">👨 ប្រុស</span>
-                  {mChar?.audioPreviewUrl ? (
-                    <button
-                      type="button"
-                      onClick={() => playCharAudio('char_male', mChar.audioPreviewUrl!)}
-                      className="ml-0.5 p-0.5 hover:text-white transition text-blue-400"
-                      title="ស្តាប់គំរូសំឡេងប្រុស"
-                    >
-                      {isPlayingM ? <Pause size={12} className="text-amber-400 animate-pulse" /> : <Play size={12} />}
-                    </button>
-                  ) : (
-                    <span className="text-[10px] text-blue-400/60 font-mono">Auto</span>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => playCharAudio('char_male', previewUrl)}
+                    className="ml-0.5 p-0.5 hover:text-white transition text-blue-400 cursor-pointer"
+                    title="ស្តាប់គំរូសំឡេងប្រុស"
+                  >
+                    {isPlayingM ? <Pause size={12} className="text-amber-400 animate-pulse" /> : <Play size={12} />}
+                  </button>
+                  <span className="text-[10px] text-blue-400/80 font-mono">
+                    {mChar?.referenceAudioBase64 ? 'វីដេអូ' : 'AI'}
+                  </span>
                 </div>
               );
             })()}

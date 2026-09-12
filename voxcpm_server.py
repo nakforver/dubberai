@@ -32,6 +32,25 @@ app.add_middleware(
 model = None
 model_lock = asyncio.Lock()
 
+def estimate_pitch_hz(audio_data: np.ndarray, sample_rate: int) -> float:
+    try:
+        if audio_data.ndim > 1:
+            audio_data = audio_data.mean(axis=1)
+        if len(audio_data) < sample_rate * 0.3:
+            return 0.0
+        corr = np.correlate(audio_data, audio_data, mode='full')
+        corr = corr[len(corr)//2:]
+        min_lag = int(sample_rate / 400) # max 400Hz
+        max_lag = int(sample_rate / 65)  # min 65Hz
+        if max_lag <= min_lag or max_lag >= len(corr):
+            return 0.0
+        peak_lag = min_lag + int(np.argmax(corr[min_lag:max_lag]))
+        if peak_lag <= 0:
+            return 0.0
+        return float(sample_rate / peak_lag)
+    except Exception:
+        return 0.0
+
 def get_model():
     global model
     if model is None:
@@ -98,11 +117,23 @@ async def clone_voice_json(req: CloneRequest):
             if ref_max < 0.02:
                 print(f"[VoxCPM2] Warning: Reference audio is near silent (peak={ref_max:.4f}), ignoring reference", flush=True)
                 ref_path = None
-            elif ref_max < 0.7:
-                # Boost reference audio so VoxCPM2 can clearly hear the speaker's vocal formants
-                boosted = ref_data * (0.85 / max(ref_max, 1e-4))
-                sf.write(ref_path, boosted, ref_sr)
-                print(f"[VoxCPM2] Boosted reference audio peak from {ref_max:.3f} to 0.85", flush=True)
+            else:
+                # Protect against wrong-gender reference audio!
+                ref_pitch = estimate_pitch_hz(ref_data, ref_sr)
+                is_female_req = any(w in str(req.gender).lower() for w in ("female", "woman", "girl", "ស្រី")) if req.gender else False
+                is_male_req = any(w in str(req.gender).lower() for w in ("male", "man", "boy", "ប្រុស")) if req.gender else False
+
+                if is_female_req and ref_pitch > 0 and ref_pitch < 160.0:
+                    print(f"[VoxCPM2] Rejecting reference audio for female request: detected pitch is {ref_pitch:.1f}Hz (male timbre). Synthesizing with natural AI female voice.", flush=True)
+                    ref_path = None
+                elif is_male_req and ref_pitch > 215.0:
+                    print(f"[VoxCPM2] Rejecting reference audio for male request: detected pitch is {ref_pitch:.1f}Hz (female timbre). Synthesizing with natural AI male voice.", flush=True)
+                    ref_path = None
+                elif ref_max < 0.7 and ref_path:
+                    # Boost reference audio so VoxCPM2 can clearly hear the speaker's vocal formants
+                    boosted = ref_data * (0.85 / max(ref_max, 1e-4))
+                    sf.write(ref_path, boosted, ref_sr)
+                    print(f"[VoxCPM2] Boosted reference audio peak from {ref_max:.3f} to 0.85 (pitch={ref_pitch:.1f}Hz)", flush=True)
         except Exception as e:
             print(f"[VoxCPM2] Error checking/normalizing reference audio: {e}", flush=True)
 
