@@ -1415,8 +1415,8 @@ app.post('/api/tts', async (req, res) => {
         const payload = {
           text,
           reference_audio_base64: refBase64,
-          inference_timesteps: 3,
-          cfg_value: 1.0
+          inference_timesteps: 6,
+          cfg_value: 2.0
         };
 
         let response: any;

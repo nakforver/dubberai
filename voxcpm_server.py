@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import time
 import uuid
 import base64
@@ -58,8 +59,8 @@ class CloneRequest(BaseModel):
     text: str
     reference_wav_path: Optional[str] = None
     reference_audio_base64: Optional[str] = None
-    cfg_value: Optional[float] = 1.0
-    inference_timesteps: Optional[int] = 3
+    cfg_value: Optional[float] = 2.0
+    inference_timesteps: Optional[int] = 6
 
 @app.post("/clone")
 async def clone_voice_json(req: CloneRequest):
@@ -106,12 +107,24 @@ async def clone_voice_json(req: CloneRequest):
     tmp_wav = os.path.join(tempfile.gettempdir(), f"voxcpm_{uid}.wav")
     tmp_mp3 = os.path.join(tempfile.gettempdir(), f"voxcpm_{uid}.mp3")
 
-    cfg_val = req.cfg_value if req.cfg_value is not None else 1.0
-    steps = req.inference_timesteps if req.inference_timesteps is not None else 3
-
     text_clean = req.text.strip()
-    # Estimate reasonable max token budget to prevent endless generation loops and 220s hangs
-    max_audio_sec = max(3.5, min(14.0, len(text_clean) * 0.35 + 3.0))
+
+    # For Khmer unicode text, VoxCPM2 requires the prompt style prefix '(Khmer language) '
+    # so that the underlying MiniCPM-4 model activates Khmer phonetic synthesis instead of drifting.
+    is_khmer = bool(re.search(r'[\u1780-\u17ff]', text_clean))
+    if is_khmer and not text_clean.startswith("("):
+        text_to_synthesize = f"(Khmer language) {text_clean}"
+    else:
+        text_to_synthesize = text_clean
+
+    # CFG scale >= 1.8 is critical for faithful text guidance and preventing semantic drift
+    cfg_val = req.cfg_value if (req.cfg_value is not None and req.cfg_value >= 1.8) else 2.0
+    # 6 timesteps gives sharp phoneme definition on CPU in ~20-25s
+    steps = req.inference_timesteps if (req.inference_timesteps is not None and req.inference_timesteps >= 5) else 6
+
+    # Calculate token budget from actual spoken text (excluding style/language parenthesized control prompt)
+    spoken_text = re.sub(r'^\([^)]+\)\s*', '', text_to_synthesize)
+    max_audio_sec = max(2.5, min(14.0, len(spoken_text) * 0.28 + 1.2))
     max_tokens = int(max_audio_sec * 6.25) + 6
 
     try:
@@ -121,7 +134,7 @@ async def clone_voice_json(req: CloneRequest):
             
             def _run_inference():
                 kwargs = {
-                    "text": text_clean,
+                    "text": text_to_synthesize,
                     "cfg_value": cfg_val,
                     "inference_timesteps": steps,
                     "retry_badcase": False,
@@ -137,6 +150,15 @@ async def clone_voice_json(req: CloneRequest):
 
         sample_rate = getattr(m.tts_model, "sample_rate", 48000)
         
+        # Trim leading and trailing silence for clean playback
+        if len(wav) > 0:
+            abs_wav = np.abs(wav)
+            non_silent = np.where(abs_wav > 0.015)[0]
+            if len(non_silent) > 0:
+                s_idx = max(0, non_silent[0] - int(sample_rate * 0.04))
+                e_idx = min(len(wav), non_silent[-1] + int(sample_rate * 0.08))
+                wav = wav[s_idx:e_idx]
+
         # Normalize output speech to peak 0.89 (-1.0 dB) so speech is loud, clear, and never quiet or hissy
         max_amp = float(np.abs(wav).max()) if len(wav) > 0 else 0.0
         if max_amp > 1e-4:
