@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { ArrowLeft, Music, LayoutGrid, MoreVertical, Play, Pause, Mic, FileAudio, Download, CheckSquare, Square, Volume2, CheckCircle2, Loader2, Scissors, Upload, Sparkles } from 'lucide-react';
-import { ViewState, SubtitleLine, CharacterProfile } from '../types';
+import { ArrowLeft, Music, LayoutGrid, MoreVertical, Play, Pause, Mic, FileAudio, Download, CheckSquare, Square, Volume2, CheckCircle2, Loader2, Scissors, Upload, Sparkles, UserPlus, Trash2, Users } from 'lucide-react';
+import { ViewState, SubtitleLine, CharacterProfile, SpeakerProfile } from '../types';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
@@ -37,25 +37,25 @@ export default function Editor({ onNavigate, videoFile, apiKey, awsAccessKeyId, 
   const [masterVoiceBase64, setMasterVoiceBase64] = useState<string | null>(null);
   const masterVoiceRef = useRef<string | null>(null);
 
-  const [characters, setCharacters] = useState<CharacterProfile[]>([
+  const [characters, setCharacters] = useState<SpeakerProfile[]>([
     {
-      id: 'char_female',
-      name: 'តួស្រី (ដុងយី / Female)',
+      id: 'speaker_001',
+      name: 'Speaker 1 (ស្រី)',
       gender: 'female',
-      voiceSource: 'clean_ai',
+      voiceSource: 'video',
       referenceAudioBase64: null,
       audioPreviewUrl: null
     },
     {
-      id: 'char_male',
-      name: 'តួប្រុស (ព្រះរាជា / Male)',
+      id: 'speaker_002',
+      name: 'Speaker 2 (ប្រុស)',
       gender: 'male',
-      voiceSource: 'clean_ai',
+      voiceSource: 'video',
       referenceAudioBase64: null,
       audioPreviewUrl: null
     }
   ]);
-  const charactersRef = useRef<CharacterProfile[]>(characters);
+  const charactersRef = useRef<SpeakerProfile[]>(characters);
   useEffect(() => {
     charactersRef.current = characters;
   }, [characters]);
@@ -233,19 +233,23 @@ const videoRef = useRef<HTMLVideoElement>(null);
         }
         
         if (job.status === 'done') {
-          const newLines = job.lines.map((l: any, idx: number) => ({
-            ...l,
-            id: l.id || `line-${Date.now()}-${idx}`,
-            gender: l.gender ? (String(l.gender).toLowerCase().includes('female') ? 'female' : 'male') : (idx % 2 === 0 ? 'female' : 'male'),
-            selected: true,
-            generated: false,
-            audioUrl: null,
-            audioDuration: undefined
-          }));
-          setLines(newLines);
-          // Keep ref synchronized immediately for MAGIC PROCESS.
-          linesRef.current = newLines;
-          if (job.masterVoices) {
+          // If server provided speaker diarization profiles, populate them
+          if (job.speakers && Object.keys(job.speakers).length > 0) {
+            const mappedSpeakers: SpeakerProfile[] = Object.values(job.speakers).map((spk: any) => ({
+              id: spk.id,
+              name: spk.name || (spk.gender === 'female' ? `Speaker ${spk.id.replace(/\D/g, '') || '1'} (ស្រី)` : `Speaker ${spk.id.replace(/\D/g, '') || '2'} (ប្រុស)`),
+              gender: spk.gender || 'female',
+              voiceSource: spk.referenceAudioBase64 ? 'video' : 'clean_ai',
+              referenceAudioBase64: spk.referenceAudioBase64 || null,
+              audioPreviewUrl: spk.referenceAudioBase64 ? `data:audio/wav;base64,${spk.referenceAudioBase64}` : null,
+              refText: spk.refText,
+              refStart: spk.refStart,
+              refEnd: spk.refEnd,
+              videoTime: spk.refStart !== undefined ? `${Math.floor(spk.refStart / 60)}:${(spk.refStart % 60).toFixed(1).padStart(4, '0')}` : 'Auto'
+            }));
+            setCharacters(mappedSpeakers);
+            charactersRef.current = mappedSpeakers;
+          } else if (job.masterVoices) {
             setCharacters(prev => prev.map(c => {
               if (c.gender === 'female' && job.masterVoices?.female) {
                 return {
@@ -272,6 +276,27 @@ const videoRef = useRef<HTMLVideoElement>(null);
             setMasterVoiceBase64(job.masterVoiceBase64);
             masterVoiceRef.current = job.masterVoiceBase64;
           }
+
+          const newLines = job.lines.map((l: any, idx: number) => {
+            const lineGender: 'female' | 'male' = l.gender ? (String(l.gender).toLowerCase().includes('female') ? 'female' : 'male') : (idx % 2 === 0 ? 'female' : 'male');
+            const defaultSpk = lineGender === 'male' ? 'speaker_002' : 'speaker_001';
+            const speakerId = l.speaker || defaultSpk;
+            const speakerName = l.speakerName || (lineGender === 'male' ? 'Speaker 2' : 'Speaker 1');
+            return {
+              ...l,
+              id: l.id || `line-${Date.now()}-${idx}`,
+              gender: lineGender,
+              speaker: speakerId,
+              speakerName: speakerName,
+              selected: true,
+              generated: false,
+              audioUrl: null,
+              audioDuration: undefined
+            };
+          });
+          setLines(newLines);
+          // Keep ref synchronized immediately for MAGIC PROCESS.
+          linesRef.current = newLines;
           setTranscribeProgress(100);
           setTranscribeStatus('រួចរាល់!');
           // Server will handle 0 lines check
@@ -320,11 +345,12 @@ const videoRef = useRef<HTMLVideoElement>(null);
       }
       setExtractingCharId(charId);
       const currentTime = videoRef.current?.currentTime || 0;
-      const res = await fetch('/api/extract-character-voice', {
+      const res = await fetch('/api/extract-speaker-voice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fileId: serverVideoFileId,
+          speakerId: charId,
           startTime: currentTime,
           duration: 4.0
         })
@@ -388,6 +414,43 @@ const videoRef = useRef<HTMLVideoElement>(null);
     } : c));
   };
 
+  const handleAddSpeaker = () => {
+    const nextIdx = characters.length + 1;
+    const newId = `speaker_${String(nextIdx).padStart(3, '0')}`;
+    const newGender: 'female' | 'male' = nextIdx % 2 === 1 ? 'female' : 'male';
+    const newSpeaker: SpeakerProfile = {
+      id: newId,
+      name: `Speaker ${nextIdx} (${newGender === 'female' ? 'ស្រី' : 'ប្រុស'})`,
+      gender: newGender,
+      voiceSource: 'clean_ai',
+      referenceAudioBase64: null,
+      audioPreviewUrl: null
+    };
+    setCharacters(prev => [...prev, newSpeaker]);
+  };
+
+  const handleToggleSpeakerGender = (charId: string) => {
+    setCharacters(prev => prev.map(c => {
+      if (c.id === charId) {
+        const nextGender: 'female' | 'male' = c.gender === 'female' ? 'male' : 'female';
+        const updatedName = c.name.includes('Speaker')
+          ? c.name.replace(/\((?:ស្រី|ប្រុស)\)/, `(${nextGender === 'female' ? 'ស្រី' : 'ប្រុស'})`)
+          : c.name;
+        return {
+          ...c,
+          gender: nextGender,
+          name: updatedName
+        };
+      }
+      return c;
+    }));
+  };
+
+  const handleDeleteSpeaker = (charId: string) => {
+    if (characters.length <= 1) return;
+    setCharacters(prev => prev.filter(c => c.id !== charId));
+  };
+
   const toggleSelectAll = () => {
     const allSelected = lines.length > 0 && lines.every(l => l.selected);
     setLines(lines.map(l => ({ ...l, selected: !allSelected })));
@@ -408,8 +471,12 @@ const videoRef = useRef<HTMLVideoElement>(null);
 
       const currentLine = linesRef.current.find(l => l.id === lineId);
       const lineGender: 'female' | 'male' = (currentLine?.gender === 'male') ? 'male' : 'female';
-      const char = charactersRef.current.find(c => c.gender === lineGender);
-      const charRefAudio = char?.referenceAudioBase64 || null;
+      const speakerId = currentLine?.speaker || (lineGender === 'male' ? 'speaker_002' : 'speaker_001');
+
+      // Match speaker profile by speakerId first, fallback to gender match
+      const speakerProfile = charactersRef.current.find(c => c.id === speakerId) || charactersRef.current.find(c => c.gender === lineGender);
+      const charRefAudio = speakerProfile?.referenceAudioBase64 || null;
+      const promptText = speakerProfile?.refText || undefined;
 
       const res = await fetch('/api/tts', {
         method: 'POST',
@@ -418,12 +485,15 @@ const videoRef = useRef<HTMLVideoElement>(null);
           text,
           voice,
           fileId: serverVideoFileId,
+          speakerId: speakerProfile?.id || speakerId,
           start: currentLine?.start,
           end: currentLine?.end,
           startTime: currentLine?.start,
           endTime: currentLine?.end,
-          gender: lineGender,
-          referenceAudioBase64: charRefAudio
+          gender: speakerProfile?.gender || lineGender,
+          referenceAudioBase64: charRefAudio,
+          promptText: promptText,
+          refText: promptText
         })
       });
 
@@ -735,7 +805,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
           start: line.start,
           end: line.end,
           segmentId: line.id,
-          speakerId: 'speaker-1',
+          speakerId: line.speaker || (line.gender === 'male' ? 'speaker_002' : 'speaker_001'),
           voiceId: voice,
           expectedDuration: line.audioDuration
         });
@@ -863,17 +933,29 @@ const videoRef = useRef<HTMLVideoElement>(null);
         )}
       </div>
 
-      {/* Character Voices Control Panel (គ្រប់គ្រងសំឡេងតួអង្គដើម) */}
+      {/* Speaker Identity Voices Control Panel (គ្រប់គ្រងសំឡេងតួអង្គតាម Speaker Diarization) */}
       <div className="bg-gradient-to-r from-gray-950 via-[#131122] to-gray-950 border-b border-gray-800 p-3 shrink-0">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
           <div className="flex items-center gap-2">
-            <span className="text-xs sm:text-sm font-bold text-pink-400">🎭 សំឡេងតួអង្គដើម (Character Voices Clone)</span>
-            <span className="text-[10px] text-gray-400 hidden sm:inline">កាត់ផ្ទាល់ពីវីដេអូ ឬ Upload សំឡេងស្អាត</span>
+            <Users size={16} className="text-pink-400" />
+            <span className="text-xs sm:text-sm font-bold text-pink-400">🎙️ សំឡេងតួអង្គដើមតាម Speaker Diarization (VoxCPM2 Identity Mapping)</span>
+            <span className="text-[10px] text-gray-400 hidden md:inline">រក្សាអត្តសញ្ញាណសំឡេងតាមតួអង្គនីមួយៗ មិនច្របូកច្របល់</span>
           </div>
-          <span className="text-[10px] text-gray-500 hidden sm:inline">VoxCPM2 Neural Cloning</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleAddSpeaker}
+              className="px-2 py-1 rounded-lg text-xs font-semibold bg-pink-900/40 hover:bg-pink-800/60 text-pink-200 border border-pink-700/50 flex items-center gap-1 transition"
+              title="បន្ថែម Speaker ថ្មី"
+            >
+              <UserPlus size={13} />
+              <span>+ បន្ថែម Speaker</span>
+            </button>
+            <span className="text-[10px] text-gray-500 hidden sm:inline">VoxCPM2 Neural Cloning</span>
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
           {characters.map((char) => (
             <div
               key={char.id}
@@ -883,9 +965,16 @@ const videoRef = useRef<HTMLVideoElement>(null);
                   : 'bg-blue-950/20 border-blue-900/40 hover:border-blue-800/60'
               }`}
             >
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-1.5">
                 <div className="flex items-center gap-1.5 font-medium text-xs">
-                  <span className="text-base">{char.gender === 'female' ? '👩' : '👨'}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleSpeakerGender(char.id)}
+                    title="ចុចដើម្បីប្តូរ ស្រី / ប្រុស"
+                    className="hover:scale-110 transition-transform"
+                  >
+                    <span className="text-base">{char.gender === 'female' ? '👩' : '👨'}</span>
+                  </button>
                   <span className={char.gender === 'female' ? 'text-pink-300 font-semibold' : 'text-blue-300 font-semibold'}>
                     {char.name}
                   </span>
@@ -907,11 +996,28 @@ const videoRef = useRef<HTMLVideoElement>(null);
                   {char.voiceSource === 'clean_ai' && (
                     <span className="px-1.5 py-0.5 rounded bg-purple-950/80 text-purple-300 border border-purple-700/50 flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
-                      AI ស្អាត (គ្មាន BGM)
+                      AI ស្អាត
                     </span>
+                  )}
+                  {characters.length > 2 && (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSpeaker(char.id)}
+                      className="text-gray-500 hover:text-red-400 transition p-0.5"
+                      title="លុប Speaker នេះ"
+                    >
+                      <Trash2 size={12} />
+                    </button>
                   )}
                 </div>
               </div>
+
+              {/* Reference Audio Quote / Prompt Text if available */}
+              {char.refText && (
+                <div className="text-[10px] text-gray-400 italic mb-2 px-1.5 py-0.5 rounded bg-gray-900/60 truncate" title={char.refText}>
+                  💬 "{char.refText}"
+                </div>
+              )}
 
               {/* Action Buttons */}
               <div className="flex items-center gap-1.5 flex-wrap">
@@ -949,7 +1055,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
                   ) : (
                     <Scissors size={12} />
                   )}
-                  <span>{extractingCharId === char.id ? 'កំពុងកាត់...' : '✂️ កាត់ពីវីដេអូត្រង់នេះ'}</span>
+                  <span>{extractingCharId === char.id ? 'កំពុងកាត់...' : '✂️ កាត់ពីវីដេអូ'}</span>
                 </button>
 
                 <button
@@ -959,7 +1065,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
                   title="Upload ឯកសារសំឡេង MP3/WAV របស់តួអង្គ"
                 >
                   <Upload size={12} />
-                  <span>Upload សំឡេង</span>
+                  <span>Upload</span>
                 </button>
                 <input
                   type="file"
@@ -1324,23 +1430,40 @@ const videoRef = useRef<HTMLVideoElement>(null);
                     <span className="font-mono tracking-tighter">{line.start} - {line.end}</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      title="ចុចដើម្បីប្តូរសំឡេង (ស្រី / ប្រុស)"
-                      onClick={() => {
-                        const nextGender: 'female' | 'male' = (line.gender === 'female') ? 'male' : 'female';
-                        const updated: SubtitleLine[] = lines.map(l => l.id === line.id ? { ...l, gender: nextGender, generated: false, audioUrl: undefined } : l);
-                        setLines(updated);
-                        linesRef.current = updated;
-                      }}
-                      className={`px-2 py-0.5 rounded text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition ${
-                        line.gender === 'female'
-                          ? 'bg-pink-950/70 text-pink-300 border border-pink-700/50 hover:bg-pink-900/80'
-                          : 'bg-blue-950/70 text-blue-300 border border-blue-700/50 hover:bg-blue-900/80'
-                      }`}
-                    >
-                      {line.gender === 'female' ? '👩 ស្រី (តួស្រី)' : '👨 ប្រុស (តួប្រុស)'}
-                    </button>
+                    <div className="relative inline-flex items-center">
+                      <select
+                        value={line.speaker || (line.gender === 'male' ? (characters.find(c => c.gender === 'male')?.id || 'speaker_002') : (characters.find(c => c.gender === 'female')?.id || 'speaker_001'))}
+                        onChange={(e) => {
+                          const selectedId = e.target.value;
+                          const matchedSpeaker = characters.find(c => c.id === selectedId);
+                          const newGender = matchedSpeaker?.gender || line.gender || 'female';
+                          const newName = matchedSpeaker?.name || selectedId;
+                          const updated: SubtitleLine[] = lines.map(l => l.id === line.id ? {
+                            ...l,
+                            speaker: selectedId,
+                            speakerName: newName,
+                            gender: newGender,
+                            generated: false,
+                            audioUrl: undefined
+                          } : l);
+                          setLines(updated);
+                          linesRef.current = updated;
+                        }}
+                        title="ជ្រើសរើស Speaker សម្រាប់បន្ទាត់នេះ"
+                        className={`text-[11px] font-semibold rounded px-2 py-0.5 border cursor-pointer outline-none appearance-none pr-5 transition ${
+                          line.gender === 'female'
+                            ? 'bg-pink-950/80 text-pink-300 border-pink-700/60 hover:bg-pink-900/90'
+                            : 'bg-blue-950/80 text-blue-300 border-blue-700/60 hover:bg-blue-900/90'
+                        }`}
+                      >
+                        {characters.map((char) => (
+                          <option key={char.id} value={char.id} className="bg-gray-900 text-gray-200">
+                            {char.gender === 'female' ? '👩' : '👨'} {char.name}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="pointer-events-none absolute right-1.5 text-[9px] text-gray-400">▼</span>
+                    </div>
                   </div>
                 </div>
                 <textarea 

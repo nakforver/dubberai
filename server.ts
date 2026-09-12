@@ -211,7 +211,22 @@ type SubtitleLine = {
   end: string;
   text: string;
   gender?: 'female' | 'male';
+  speaker?: string;
+  speakerName?: string;
 };
+
+interface SpeakerVoiceProfile {
+  id: string;
+  name: string;
+  gender: 'female' | 'male';
+  voiceSource: 'video' | 'upload' | 'clean_ai';
+  referenceAudioBase64?: string | null;
+  audioPreviewUrl?: string | null;
+  refText?: string;
+  refStart?: number;
+  refEnd?: number;
+  videoTime?: string;
+}
 
 function parseTimestamp(value: string | number | undefined): number | null {
   if (typeof value === 'number') {
@@ -311,12 +326,19 @@ function validateSubtitleLine(value: any, index: number): SubtitleLine {
     gender = 'male';
   }
 
+  const rawSpeaker = typeof value.speaker === 'string' ? value.speaker.trim() : (typeof value.speakerId === 'string' ? value.speakerId.trim() : '');
+  const rawSpeakerName = typeof value.speakerName === 'string' ? value.speakerName.trim() : '';
+  const speaker = rawSpeaker || (gender === 'female' ? 'speaker_001' : 'speaker_002');
+  const speakerName = rawSpeakerName || (gender === 'female' ? 'Speaker 1 (ស្រី)' : 'Speaker 2 (ប្រុស)');
+
   return {
     id,
     start: String(value.start),
     end: String(value.end),
     text: value.text.trim(),
-    ...(gender ? { gender } : {})
+    ...(gender ? { gender } : {}),
+    speaker,
+    speakerName
   };
 }
 
@@ -392,12 +414,28 @@ function mergeTranslatedSubtitleLine(
   if (!text) {
     throw new Error(`Empty translation at subtitle index ${index}`);
   }
+
+  const rawGender = typeof translation?.gender === 'string' ? translation.gender.toLowerCase().trim() : '';
+  let gender: 'female' | 'male' | undefined = originalLine.gender;
+  if (rawGender.includes('female') || rawGender.includes('ស្រី')) gender = 'female';
+  else if (rawGender.includes('male') || rawGender.includes('ប្រុស')) gender = 'male';
+
+  const speaker = typeof translation?.speaker === 'string' && translation.speaker.trim()
+    ? translation.speaker.trim()
+    : (originalLine.speaker || (gender === 'female' ? 'speaker_001' : 'speaker_002'));
+
+  const speakerName = typeof translation?.speakerName === 'string' && translation.speakerName.trim()
+    ? translation.speakerName.trim()
+    : (originalLine.speakerName || (gender === 'female' ? 'Speaker 1 (ស្រី)' : 'Speaker 2 (ប្រុស)'));
+
   return {
     id: originalLine.id,
     start: originalLine.start,
     end: originalLine.end,
     text,
-    ...(originalLine.gender ? { gender: originalLine.gender } : {})
+    ...(gender ? { gender } : {}),
+    speaker,
+    speakerName
   };
 }
 
@@ -594,109 +632,150 @@ app.post('/api/upload-chunk', express.raw({ type: '*/*', limit: '500mb' }), asyn
   }
 });
 
-const jobs = new Map<string, { status: string, progress: number, lines?: any[], error?: string, masterVoiceBase64?: string | null, masterVoices?: { female?: string | null; male?: string | null } }>();
+const jobs = new Map<string, {
+  status: string,
+  progress: number,
+  lines?: any[],
+  error?: string,
+  masterVoiceBase64?: string | null,
+  masterVoices?: { female?: string | null; male?: string | null },
+  speakers?: Record<string, SpeakerVoiceProfile>
+}>();
 const exportJobs = new Map<string, { status: string; error?: string; path?: string; progress?: number; }>();
 const exportCache = new Map<string, string>();
 const masterVoiceCache = new Map<string, string>();
 const femaleVoiceCache = new Map<string, string>();
 const maleVoiceCache = new Map<string, string>();
+const speakerVoiceCache = new Map<string, string>(); // `${fileId}_${speakerId}` -> base64
+const speakerProfileCache = new Map<string, Record<string, SpeakerVoiceProfile>>(); // `${fileId}` -> Record<string, SpeakerVoiceProfile>
 const uploadedVideos = new Map<string, number>();
+
+async function extractSpeakerReferenceVoices(
+  filePath: string,
+  fileId: string,
+  lines: SubtitleLine[]
+): Promise<Record<string, SpeakerVoiceProfile>> {
+  const result: Record<string, SpeakerVoiceProfile> = {};
+  if (!fs.existsSync(filePath) || !Array.isArray(lines) || lines.length === 0) return result;
+
+  // 1. Group candidate lines by speakerId
+  const speakerGroups = new Map<string, SubtitleLine[]>();
+  for (const line of lines) {
+    const spkId = line.speaker || (line.gender === 'female' ? 'speaker_001' : 'speaker_002');
+    if (!speakerGroups.has(spkId)) {
+      speakerGroups.set(spkId, []);
+    }
+    speakerGroups.get(spkId)!.push(line);
+  }
+
+  // 2. For each speaker, extract the cleanest candidate line
+  for (const [spkId, spkLines] of speakerGroups.entries()) {
+    const spkGender: 'female' | 'male' = spkLines.find(l => l.gender)?.gender || (spkId.endsWith('1') ? 'female' : 'male');
+    const defaultName = spkLines[0]?.speakerName || (spkGender === 'female' ? `Speaker ${spkId.replace('speaker_', '')} (ស្រី)` : `Speaker ${spkId.replace('speaker_', '')} (ប្រុស)`);
+
+    const validCandidates = spkLines
+      .map(l => {
+        const s = parseTimestamp(l.start);
+        const e = parseTimestamp(l.end);
+        if (s === null || e === null || e <= s) return null;
+        return { start: s, end: e, duration: e - s, text: l.text };
+      })
+      .filter((c): c is { start: number; end: number; duration: number; text: string } => c !== null && c.duration >= 1.8)
+      .slice(0, 10);
+
+    let bestCandidate: { start: number; dur: number; text: string } | null = null;
+    let highestPeak = -999;
+
+    for (const cand of validCandidates) {
+      const testStart = Math.max(0, cand.start);
+      const testDur = Math.min(5.5, Math.max(2.5, cand.duration));
+      const testTmp = path.join(os.tmpdir(), `test_${spkId}_${crypto.randomUUID()}.wav`);
+      try {
+        await execAsync(
+          `ffmpeg -hide_banner -loglevel error -y -ss ${testStart.toFixed(2)} -t ${testDur.toFixed(2)} -i "${filePath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${testTmp}"`
+        );
+        if (fs.existsSync(testTmp) && fs.statSync(testTmp).size > 2000) {
+          const { stdout, stderr } = await execAsync(
+            `ffmpeg -hide_banner -i "${testTmp}" -af "volumedetect" -f null -`
+          );
+          const out = (stderr || '') + (stdout || '');
+          const maxMatch = out.match(/max_volume:\s*(-?[\d.]+)\s*dB/);
+          const maxVol = maxMatch ? parseFloat(maxMatch[1]) : -99;
+          if (maxVol > highestPeak) {
+            highestPeak = maxVol;
+            bestCandidate = { start: testStart, dur: testDur, text: cand.text };
+          }
+          if (maxVol > -13) {
+            try { fs.unlinkSync(testTmp); } catch(e) {}
+            break;
+          }
+        }
+      } catch (e) {
+      } finally {
+        if (fs.existsSync(testTmp)) {
+          try { fs.unlinkSync(testTmp); } catch(e) {}
+        }
+      }
+    }
+
+    let b64: string | null = null;
+    let timeStr: string | undefined = undefined;
+
+    if (bestCandidate) {
+      const outPath = path.join(os.tmpdir(), `ref_voice_${fileId}_${spkId}.wav`);
+      try {
+        await execAsync(
+          `ffmpeg -hide_banner -loglevel error -y -ss ${bestCandidate.start.toFixed(2)} -t ${bestCandidate.dur.toFixed(2)} -i "${filePath}" -vn -af "loudnorm=I=-16:TP=-1.5:LRA=11,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-40dB" -acodec pcm_s16le -ar 16000 -ac 1 "${outPath}"`
+        );
+        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1500) {
+          b64 = fs.readFileSync(outPath).toString('base64');
+          speakerVoiceCache.set(`${fileId}_${spkId}`, b64);
+          timeStr = formatTimelineTimestamp(bestCandidate.start);
+          console.log(`[SPEAKER VOICE] Extracted ${spkId} (${defaultName}) at ${bestCandidate.start.toFixed(2)}s (dur=${bestCandidate.dur.toFixed(2)}s, peak=${highestPeak.toFixed(1)}dB)`);
+        }
+      } catch (err) {
+        console.warn(`[SPEAKER VOICE] Extraction failed for ${spkId}:`, err);
+      }
+    }
+
+    result[spkId] = {
+      id: spkId,
+      name: defaultName,
+      gender: spkGender,
+      voiceSource: b64 ? 'video' : 'clean_ai',
+      referenceAudioBase64: b64,
+      audioPreviewUrl: b64 ? `data:audio/wav;base64,${b64}` : null,
+      refText: bestCandidate?.text,
+      refStart: bestCandidate?.start,
+      refEnd: bestCandidate ? (bestCandidate.start + bestCandidate.dur) : undefined,
+      videoTime: timeStr
+    };
+
+    if (b64) {
+      if (spkGender === 'female' && !femaleVoiceCache.has(fileId)) {
+        femaleVoiceCache.set(fileId, b64);
+      } else if (spkGender === 'male' && !maleVoiceCache.has(fileId)) {
+        maleVoiceCache.set(fileId, b64);
+      }
+    }
+  }
+
+  speakerProfileCache.set(fileId, result);
+  return result;
+}
 
 async function extractCharacterVoices(
   filePath: string,
   fileId: string,
   lines: SubtitleLine[]
 ): Promise<{ female: string | null; male: string | null }> {
-  const result: { female: string | null; male: string | null } = { female: null, male: null };
-  try {
-    if (!fs.existsSync(filePath)) return result;
-
-    const femaleCandidates = lines
-      .filter(l => l.gender === 'female')
-      .map(l => {
-        const s = parseTimestamp(l.start);
-        const e = parseTimestamp(l.end);
-        if (s === null || e === null || e <= s) return null;
-        return { start: s, end: e, duration: e - s, text: l.text };
-      })
-      .filter((c): c is { start: number; end: number; duration: number; text: string } => c !== null && c.duration >= 1.8)
-      .slice(0, 10);
-
-    const maleCandidates = lines
-      .filter(l => l.gender === 'male')
-      .map(l => {
-        const s = parseTimestamp(l.start);
-        const e = parseTimestamp(l.end);
-        if (s === null || e === null || e <= s) return null;
-        return { start: s, end: e, duration: e - s, text: l.text };
-      })
-      .filter((c): c is { start: number; end: number; duration: number; text: string } => c !== null && c.duration >= 1.8)
-      .slice(0, 10);
-
-    async function extractBest(candidates: typeof femaleCandidates, prefix: string): Promise<string | null> {
-      if (candidates.length === 0) return null;
-      let bestCandidate: { start: number; dur: number } | null = null;
-      let highestPeak = -999;
-
-      for (const cand of candidates) {
-        const testStart = Math.max(0, cand.start);
-        const testDur = Math.min(5.5, Math.max(2.5, cand.duration));
-        const testTmp = path.join(os.tmpdir(), `test_${prefix}_${crypto.randomUUID()}.wav`);
-        try {
-          await execAsync(
-            `ffmpeg -hide_banner -loglevel error -y -ss ${testStart.toFixed(2)} -t ${testDur.toFixed(2)} -i "${filePath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${testTmp}"`
-          );
-          if (fs.existsSync(testTmp) && fs.statSync(testTmp).size > 2000) {
-            const { stdout, stderr } = await execAsync(
-              `ffmpeg -hide_banner -i "${testTmp}" -af "volumedetect" -f null -`
-            );
-            const out = (stderr || '') + (stdout || '');
-            const maxMatch = out.match(/max_volume:\s*(-?[\d.]+)\s*dB/);
-            const maxVol = maxMatch ? parseFloat(maxMatch[1]) : -99;
-            if (maxVol > highestPeak) {
-              highestPeak = maxVol;
-              bestCandidate = { start: testStart, dur: testDur };
-            }
-            if (maxVol > -13) {
-              try { fs.unlinkSync(testTmp); } catch(e) {}
-              break;
-            }
-          }
-        } catch (e) {
-        } finally {
-          if (fs.existsSync(testTmp)) {
-            try { fs.unlinkSync(testTmp); } catch(e) {}
-          }
-        }
-      }
-
-      if (!bestCandidate) return null;
-      const outPath = path.join(os.tmpdir(), `${prefix}_ref_${fileId}.wav`);
-      await execAsync(
-        `ffmpeg -hide_banner -loglevel error -y -ss ${bestCandidate.start.toFixed(2)} -t ${bestCandidate.dur.toFixed(2)} -i "${filePath}" -vn -af "loudnorm=I=-16:TP=-1.5:LRA=11,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-40dB" -acodec pcm_s16le -ar 16000 -ac 1 "${outPath}"`
-      );
-
-      if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1500) {
-        const b64 = fs.readFileSync(outPath).toString('base64');
-        console.log(`[CHARACTER VOICE] Extracted ${prefix} voice for ${fileId} at ${bestCandidate.start.toFixed(2)}s (dur=${bestCandidate.dur.toFixed(2)}s, peak=${highestPeak.toFixed(1)}dB)`);
-        return b64;
-      }
-      return null;
-    }
-
-    result.female = await extractBest(femaleCandidates, 'female');
-    if (result.female) femaleVoiceCache.set(fileId, result.female);
-
-    result.male = await extractBest(maleCandidates, 'male');
-    if (result.male) maleVoiceCache.set(fileId, result.male);
-
-    if (result.female) masterVoiceCache.set(fileId, result.female);
-    else if (result.male) masterVoiceCache.set(fileId, result.male);
-
-  } catch (err) {
-    console.warn('[CHARACTER VOICE] Extraction failed:', err);
-  }
-  return result;
+  const speakers = await extractSpeakerReferenceVoices(filePath, fileId, lines);
+  const femaleSpk = Object.values(speakers).find(s => s.gender === 'female' && s.referenceAudioBase64);
+  const maleSpk = Object.values(speakers).find(s => s.gender === 'male' && s.referenceAudioBase64);
+  return {
+    female: femaleSpk?.referenceAudioBase64 || femaleVoiceCache.get(fileId) || null,
+    male: maleSpk?.referenceAudioBase64 || maleVoiceCache.get(fileId) || null
+  };
 }
 
 function trackUploadedVideo(fileId: string) {
@@ -725,9 +804,9 @@ app.get('/api/video-exists', (req, res) => {
   res.json({ exists });
 });
 
-app.post('/api/extract-character-voice', async (req, res) => {
+const handleExtractVoice = async (req: any, res: any) => {
   try {
-    const { fileId, startTime, duration = 4.0 } = req.body;
+    const { fileId, speakerId, charId, startTime, duration = 4.0 } = req.body;
     if (!fileId) {
       return res.status(400).json({ error: 'fileId is required' });
     }
@@ -769,10 +848,15 @@ app.post('/api/extract-character-voice', async (req, res) => {
     }
 
     const audioBase64 = fs.readFileSync(outWav).toString('base64');
+    const spkKey = speakerId || charId;
+    if (spkKey) {
+      speakerVoiceCache.set(`${fileId}_${spkKey}`, audioBase64);
+    }
     try { fs.unlinkSync(outWav); } catch (e) {}
 
     return res.json({
       success: true,
+      speakerId: spkKey,
       audioBase64,
       startTime: sStart,
       duration: sDur
@@ -781,7 +865,10 @@ app.post('/api/extract-character-voice', async (req, res) => {
     console.error('[EXTRACT-VOICE] Error:', err);
     res.status(500).json({ error: err.message || 'Extract character voice failed' });
   }
-});
+};
+
+app.post('/api/extract-character-voice', handleExtractVoice);
+app.post('/api/extract-speaker-voice', handleExtractVoice);
 
 
 // ============================================================
@@ -863,7 +950,10 @@ ${JSON.stringify(chunk)}`
                     id: { type: Type.STRING },
                     start: { type: Type.STRING },
                     end: { type: Type.STRING },
-                    text: { type: Type.STRING }
+                    text: { type: Type.STRING },
+                    gender: { type: Type.STRING },
+                    speaker: { type: Type.STRING },
+                    speakerName: { type: Type.STRING }
                   },
                   required: [
                     "id",
@@ -1199,11 +1289,15 @@ if (activeModel === 'amazon') {
              await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: s3Key }));
          } catch(e) { console.error('Failed to cleanup S3', e); }
          
-          const masterVoices = await extractCharacterVoices(filePath, fileId, translatedLines);
+          const speakers = await extractSpeakerReferenceVoices(filePath, fileId, translatedLines);
+          const masterVoices = {
+            female: Object.values(speakers).find(s => s.gender === 'female' && s.referenceAudioBase64)?.referenceAudioBase64 || null,
+            male: Object.values(speakers).find(s => s.gender === 'male' && s.referenceAudioBase64)?.referenceAudioBase64 || null
+          };
           const masterVoiceBase64 = masterVoices.female || masterVoices.male;
           if (fs.existsSync(filePath)) trackUploadedVideo(fileId);
           
-          jobs.set(jobId, { status: 'done', progress: 100, lines: translatedLines, masterVoiceBase64, masterVoices });
+          jobs.set(jobId, { status: 'done', progress: 100, lines: translatedLines, masterVoiceBase64, masterVoices, speakers });
           return; // Exit here for Amazon
       }
       
@@ -1271,10 +1365,11 @@ TRANSCRIPTION AND SEGMENTATION RULES:
 10. Continue processing until the END of the audio/video.
 11. If there are pauses or silence, do not invent dialogue during silence.
 12. If multiple people speak, preserve the chronological sequence of their speech.
-13. For each spoken dialogue, determine the speaker's vocal gender as "female" or "male".
-14. ALL subtitle text must be translated into natural Khmer (Cambodian).
-15. Do NOT output the original-language transcript.
-16. Do NOT summarize.
+13. Perform SPEAKER DIARIZATION: Identify and assign a consistent speaker ID ("speaker_001", "speaker_002", "speaker_003", etc.) and speakerName (e.g. "Speaker 1 (ដុងយី)", "Speaker 2 (ព្រះរាជា)") for each dialogue. Maintain speaker consistency across the video.
+14. For each spoken dialogue, determine the speaker's vocal gender as "female" or "male".
+15. ALL subtitle text must be translated into natural Khmer (Cambodian).
+16. Do NOT output the original-language transcript.
+17. Do NOT summarize.
 
 IMPORTANT:
 The video may be several minutes long. Do NOT reduce the entire video to a small number of subtitle entries simply to save tokens. Produce as many accurate subtitle segments as reasonably possible.
@@ -1282,7 +1377,7 @@ The video may be several minutes long. Do NOT reduce the entire video to a small
 OUTPUT:
 Return ONLY a valid JSON array.
 Each object MUST use exactly this schema:
-{ id: string, start: string, end: string, text: string, gender: "female" | "male" }
+{ id: string, start: string, end: string, text: string, gender: "female" | "male", speaker: string, speakerName: string }
 
 Use timestamp format M:SS.S or MM:SS.S.
 IDs must be sequential: 1, 2, 3, 4, ...
@@ -1303,7 +1398,9 @@ Do not output an empty array unless there is absolutely no speech.` },
                     start: { type: Type.STRING },
                     end: { type: Type.STRING },
                     text: { type: Type.STRING },
-                    gender: { type: Type.STRING }
+                    gender: { type: Type.STRING },
+                    speaker: { type: Type.STRING },
+                    speakerName: { type: Type.STRING }
                   },
                   required: ["id", "start", "end", "text"]
                 }
@@ -1356,8 +1453,12 @@ Do not output an empty array unless there is absolutely no speech.` },
       const normalizedLines = normalizeSubtitleTimeline(lines);
       const validatedLines = validateSubtitleLines(normalizedLines);
       
-      // Clean up and extract character reference voices for consistent TTS voice cloning
-      const masterVoices = await extractCharacterVoices(filePath, fileId, validatedLines);
+      // Clean up and extract speaker reference voices for consistent TTS voice cloning
+      const speakers = await extractSpeakerReferenceVoices(filePath, fileId, validatedLines);
+      const masterVoices = {
+        female: Object.values(speakers).find(s => s.gender === 'female' && s.referenceAudioBase64)?.referenceAudioBase64 || null,
+        male: Object.values(speakers).find(s => s.gender === 'male' && s.referenceAudioBase64)?.referenceAudioBase64 || null
+      };
       const masterVoiceBase64 = masterVoices.female || masterVoices.male;
       if (fs.existsSync(filePath)) trackUploadedVideo(fileId);
       try {
@@ -1366,7 +1467,7 @@ Do not output an empty array unless there is absolutely no speech.` },
         console.error('Failed to delete from Gemini', e);
       }
 
-      jobs.set(jobId, { status: 'done', progress: 100, lines: validatedLines, masterVoiceBase64, masterVoices });
+      jobs.set(jobId, { status: 'done', progress: 100, lines: validatedLines, masterVoiceBase64, masterVoices, speakers });
     } catch (error: any) {
       console.error('Transcription error:', error);
       let errorMessage = error.message;
@@ -1433,7 +1534,22 @@ app.get('/api/transcribe/status', (req, res) => {
 
 app.post('/api/tts', async (req, res) => {
   try {
-    const { text, voice, fileId, startTime, endTime, start, end, gender, referenceAudioBase64 } = req.body;
+    const {
+      text,
+      voice,
+      fileId,
+      startTime,
+      endTime,
+      start,
+      end,
+      gender,
+      speakerId,
+      speaker,
+      referenceAudioBase64,
+      promptText,
+      refText
+    } = req.body;
+
     if (typeof text !== 'string' || text.trim().length === 0) {
       return res.status(400).json({ error: 'TTS text is required' });
     }
@@ -1442,13 +1558,26 @@ app.post('/api/tts', async (req, res) => {
       let tempRefFile: string | null = null;
       try {
         let refBase64: string | null = null;
+        let promptAudioText: string | null = null;
 
-        // Priority 1: Direct reference audio supplied by client (Character Voice or custom audio)
+        // Priority 1: Direct reference audio supplied by client (Speaker Voice or custom audio)
         if (typeof referenceAudioBase64 === 'string' && referenceAudioBase64.length > 500) {
           refBase64 = referenceAudioBase64;
+          if (typeof promptText === 'string') promptAudioText = promptText;
+          else if (typeof refText === 'string') promptAudioText = refText;
         }
 
-        // Priority 2: Gender-matched character voice cache from video
+        // Priority 2: Speaker-specific reference voice from video diarization mapping
+        const spkKey = speakerId || speaker;
+        if (!refBase64 && fileId && spkKey && speakerVoiceCache.has(`${fileId}_${spkKey}`)) {
+          refBase64 = speakerVoiceCache.get(`${fileId}_${spkKey}`) || null;
+          const profiles = speakerProfileCache.get(fileId);
+          if (profiles && profiles[spkKey]?.refText) {
+            promptAudioText = profiles[spkKey].refText || null;
+          }
+        }
+
+        // Priority 3: Fallback to gender-matched cache from video
         if (!refBase64 && fileId) {
           if (gender === 'female' && femaleVoiceCache.has(fileId)) {
             refBase64 = femaleVoiceCache.get(fileId) || null;
@@ -1470,6 +1599,9 @@ app.post('/api/tts', async (req, res) => {
         };
         if (gender) {
           payload.gender = gender;
+        }
+        if (promptAudioText) {
+          payload.prompt_text = promptAudioText;
         }
 
         let response: any;

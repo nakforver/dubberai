@@ -59,6 +59,8 @@ class CloneRequest(BaseModel):
     text: str
     reference_wav_path: Optional[str] = None
     reference_audio_base64: Optional[str] = None
+    prompt_text: Optional[str] = None
+    prompt_wav_path: Optional[str] = None
     gender: Optional[str] = None
     cfg_value: Optional[float] = 2.0
     inference_timesteps: Optional[int] = 6
@@ -157,6 +159,9 @@ async def clone_voice_json(req: CloneRequest):
                 }
                 if ref_path:
                     kwargs["reference_wav_path"] = ref_path
+                    if req.prompt_text and req.prompt_text.strip():
+                        kwargs["prompt_wav_path"] = req.prompt_wav_path or ref_path
+                        kwargs["prompt_text"] = req.prompt_text.strip()
                 
                 return m.generate(**kwargs)
 
