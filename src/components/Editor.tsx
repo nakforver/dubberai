@@ -34,6 +34,8 @@ export default function Editor({ onNavigate, videoFile, apiKey, awsAccessKeyId, 
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [transcribeError, setTranscribeError] = useState<string | null>(null);
   const [serverVideoFileId, setServerVideoFileId] = useState<string>('');
+  const [masterVoiceBase64, setMasterVoiceBase64] = useState<string | null>(null);
+  const masterVoiceRef = useRef<string | null>(null);
   
   // Keep track of currently generating audios
   const [generatingLines, setGeneratingLines] = useState<Set<string>>(new Set());
@@ -213,6 +215,10 @@ const videoRef = useRef<HTMLVideoElement>(null);
           setLines(newLines);
           // Keep ref synchronized immediately for MAGIC PROCESS.
           linesRef.current = newLines;
+          if (job.masterVoiceBase64) {
+            setMasterVoiceBase64(job.masterVoiceBase64);
+            masterVoiceRef.current = job.masterVoiceBase64;
+          }
           setTranscribeProgress(100);
           setTranscribeStatus('រួចរាល់!');
           // Server will handle 0 lines check
@@ -262,8 +268,11 @@ const videoRef = useRef<HTMLVideoElement>(null);
           text,
           voice,
           fileId: serverVideoFileId,
-          startTime: currentLine?.startTime,
-          endTime: currentLine?.endTime
+          start: currentLine?.start,
+          end: currentLine?.end,
+          startTime: currentLine?.start,
+          endTime: currentLine?.end,
+          referenceAudioBase64: masterVoiceRef.current
         })
       });
 

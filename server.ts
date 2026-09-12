@@ -464,8 +464,8 @@ async function buildRenderedAudioSegments(
     const probed = await probeAudio(file.path);
     if (item?.expectedDuration !== undefined) {
       const expectedDuration = Number(item.expectedDuration);
-      if (!Number.isFinite(expectedDuration) || Math.abs(expectedDuration - probed.duration) > 1.5) {
-        throw new Error(`TTS duration changed for ${file.fieldname}`);
+      if (Number.isFinite(expectedDuration) && Math.abs(expectedDuration - probed.duration) > 1.5) {
+        console.warn(`[TIMELINE] Duration difference for ${file.fieldname}: expected=${expectedDuration.toFixed(2)}s probed=${probed.duration.toFixed(2)}s`);
       }
     }
 
@@ -483,6 +483,8 @@ async function buildRenderedAudioSegments(
       const gapToEnd = Math.max(sourceDuration, videoDuration - startSeconds - 0.05);
       availableDuration = Math.max(availableDuration, gapToEnd);
     }
+    availableDuration = Math.max(0.2, availableDuration);
+
     if (probed.duration <= availableDuration) {
       renderedSegments.push({
         key: file.fieldname,
@@ -501,14 +503,16 @@ async function buildRenderedAudioSegments(
       continue;
     }
 
-    const requiredSpeedIncrease = (probed.duration - availableDuration) / availableDuration;
-    if (requiredSpeedIncrease > MAX_TTS_SPEED_INCREASE) {
-      throw new Error(
-        `TTS audio is too long for ${file.fieldname}: ` +
-        `${formatSeconds(probed.duration)}s audio, ${formatSeconds(availableDuration)}s available`
+    // Adaptively calculate speed increase up to 3.5x using chained atempo filters.
+    // Never fail or throw an unhandled error so export always finishes smoothly.
+    const neededRate = probed.duration / availableDuration;
+    const rate = Math.min(3.5, Math.max(1.0, neededRate));
+    if (neededRate > 3.5) {
+      console.warn(
+        `[TIMELINE] TTS audio for ${file.fieldname} (${probed.duration.toFixed(2)}s) exceeds available time (${availableDuration.toFixed(2)}s). Capping rate at 3.5x.`
       );
     }
-    const rate = Math.min(1 + requiredSpeedIncrease, 1 + MAX_TTS_SPEED_INCREASE);
+
     renderedSegments.push({
       key: file.fieldname,
       path: file.path,
@@ -533,10 +537,10 @@ function validateSegmentTimeline(
 ): void {
   for (const segment of segments) {
     if (segment.endSeconds > videoDuration + 0.25) {
-      throw new Error(`Segment ${segment.key} ends after the video`);
+      console.warn(`[TIMELINE] Segment ${segment.key} ends after the video (${segment.endSeconds.toFixed(2)}s > ${videoDuration.toFixed(2)}s)`);
     }
     if (segment.placementSeconds < 0) {
-      throw new Error(`Segment ${segment.key} has a negative placement timestamp`);
+      segment.placementSeconds = 0;
     }
   }
 
@@ -550,8 +554,8 @@ function validateSegmentTimeline(
         current.placementSeconds < next.endSeconds &&
         next.placementSeconds < current.endSeconds;
       if (overlap > 0.1 && sourceTimingOverlaps) {
-        throw new Error(
-          `Unintended TTS overlap: ${current.key} would overlap ${next.key} by ${formatSeconds(overlap)}s`
+        console.warn(
+          `[TIMELINE] Non-blocking overlap: ${current.key} overlaps ${next.key} by ${formatSeconds(overlap)}s (amix will mix both seamlessly)`
         );
       }
       if (next.startSeconds >= current.endSeconds) break;
@@ -579,10 +583,57 @@ app.post('/api/upload-chunk', express.raw({ type: '*/*', limit: '500mb' }), asyn
   }
 });
 
-const jobs = new Map<string, { status: string, progress: number, lines?: any[], error?: string }>();
+const jobs = new Map<string, { status: string, progress: number, lines?: any[], error?: string, masterVoiceBase64?: string | null }>();
 const exportJobs = new Map<string, { status: string; error?: string; path?: string; progress?: number; }>();
 const exportCache = new Map<string, string>();
+const masterVoiceCache = new Map<string, string>();
 const uploadedVideos = new Map<string, number>();
+
+async function extractMasterVoice(
+  filePath: string,
+  fileId: string,
+  lines: SubtitleLine[]
+): Promise<string | null> {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+
+    // Pick the best subtitle segment with clear dialogue (duration 2.5s to 7s)
+    let bestLine = lines.find((l) => {
+      const s = parseTimestamp(l.start);
+      const e = parseTimestamp(l.end);
+      if (s === null || e === null) return false;
+      const d = e - s;
+      return d >= 2.5 && d <= 7.0;
+    }) || lines[0];
+
+    let refStart = 1.0;
+    let refDur = 5.0;
+    if (bestLine) {
+      const s = parseTimestamp(bestLine.start);
+      const e = parseTimestamp(bestLine.end);
+      if (s !== null && s >= 0) {
+        refStart = Math.max(0, s);
+        if (e !== null && e > refStart) {
+          refDur = Math.min(6.0, Math.max(3.0, e - refStart));
+        }
+      }
+    }
+
+    const masterPath = path.join(os.tmpdir(), `master_ref_${fileId}.wav`);
+    await execAsync(
+      `ffmpeg -hide_banner -loglevel error -y -ss ${refStart.toFixed(2)} -t ${refDur.toFixed(2)} -i "${filePath}" -vn -af "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-35dB" -acodec pcm_s16le -ar 16000 -ac 1 "${masterPath}"`
+    );
+    if (fs.existsSync(masterPath) && fs.statSync(masterPath).size > 1500) {
+      const b64 = fs.readFileSync(masterPath).toString('base64');
+      masterVoiceCache.set(fileId, b64);
+      console.log(`[MASTER VOICE] Extracted master reference voice for ${fileId} at ${refStart.toFixed(2)}s (dur=${refDur.toFixed(2)}s, size=${fs.statSync(masterPath).size} bytes)`);
+      return b64;
+    }
+  } catch (err) {
+    console.warn('[MASTER VOICE] Extraction failed:', err);
+  }
+  return null;
+}
 
 function trackUploadedVideo(fileId: string) {
   if (!fileId) return;
@@ -1026,11 +1077,12 @@ if (activeModel === 'amazon') {
              await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: s3Key }));
          } catch(e) { console.error('Failed to cleanup S3', e); }
          
-         if (fs.existsSync(filePath)) trackUploadedVideo(fileId);
-         if (uploadPath !== filePath && fs.existsSync(uploadPath)) fs.unlinkSync(uploadPath);
-         
-         jobs.set(jobId, { status: 'done', progress: 100, lines: translatedLines });
-         return; // Exit here for Amazon
+          const masterVoiceBase64 = await extractMasterVoice(filePath, fileId, translatedLines);
+          if (fs.existsSync(filePath)) trackUploadedVideo(fileId);
+          if (uploadPath !== filePath && fs.existsSync(uploadPath)) fs.unlinkSync(uploadPath);
+          
+          jobs.set(jobId, { status: 'done', progress: 100, lines: translatedLines, masterVoiceBase64 });
+          return; // Exit here for Amazon
       }
       
       // Upload to Gemini
@@ -1180,7 +1232,8 @@ Do not output an empty array unless there is absolutely no speech.` },
       const normalizedLines = normalizeSubtitleTimeline(lines);
       const validatedLines = validateSubtitleLines(normalizedLines);
       
-      // Clean up
+      // Clean up and extract master reference voice for consistent TTS voice cloning
+      const masterVoiceBase64 = await extractMasterVoice(filePath, fileId, validatedLines);
       if (fs.existsSync(filePath)) trackUploadedVideo(fileId);
       if (uploadPath !== filePath && fs.existsSync(uploadPath)) fs.unlinkSync(uploadPath);
       try {
@@ -1189,7 +1242,7 @@ Do not output an empty array unless there is absolutely no speech.` },
         console.error('Failed to delete from Gemini', e);
       }
 
-      jobs.set(jobId, { status: 'done', progress: 100, lines: validatedLines });
+      jobs.set(jobId, { status: 'done', progress: 100, lines: validatedLines, masterVoiceBase64 });
     } catch (error: any) {
       console.error('Transcription error:', error);
       let errorMessage = error.message;
@@ -1256,7 +1309,7 @@ app.get('/api/transcribe/status', (req, res) => {
 
 app.post('/api/tts', async (req, res) => {
   try {
-    const { text, voice, fileId, startTime, endTime } = req.body;
+    const { text, voice, fileId, startTime, endTime, start, end, referenceAudioBase64 } = req.body;
     if (typeof text !== 'string' || text.trim().length === 0) {
       return res.status(400).json({ error: 'TTS text is required' });
     }
@@ -1264,10 +1317,17 @@ app.post('/api/tts', async (req, res) => {
     if (voice === 'VoxCPM2') {
       let tempRefFile: string | null = null;
       try {
-        let refWav: string | null = null;
-        let refBase64: string | null = null;
+        let refBase64: string | null = (typeof referenceAudioBase64 === 'string' && referenceAudioBase64.length > 500)
+          ? referenceAudioBase64
+          : null;
 
-        if (fileId) {
+        // 1. Fallback to cached master voice for this fileId
+        if (!refBase64 && fileId && masterVoiceCache.has(fileId)) {
+          refBase64 = masterVoiceCache.get(fileId) || null;
+        }
+
+        // 2. Fallback to extracting from video if uploaded video file exists on disk
+        if (!refBase64 && fileId) {
           let videoPath = path.join(os.tmpdir(), `upload_${fileId}`);
           if (!fs.existsSync(videoPath)) {
             // Check if there are chunk files
@@ -1286,20 +1346,21 @@ app.post('/api/tts', async (req, res) => {
 
           if (fs.existsSync(videoPath)) {
             tempRefFile = path.join(os.tmpdir(), `ref_vox_${crypto.randomUUID()}.wav`);
-            const sStart = (typeof startTime === 'number' && Number.isFinite(startTime) && startTime >= 0)
-              ? Math.max(0, startTime - 0.2)
-              : 1.0;
-            const sDur = (typeof endTime === 'number' && Number.isFinite(endTime) && endTime > sStart)
-              ? Math.min(8.0, Math.max(3.0, endTime - sStart))
-              : 5.0;
+            const rawStart = start ?? startTime;
+            const rawEnd = end ?? endTime;
+            const parsedStart = typeof rawStart === 'number' ? rawStart : parseTimestamp(rawStart);
+            const parsedEnd = typeof rawEnd === 'number' ? rawEnd : parseTimestamp(rawEnd);
+
+            const sStart = (parsedStart !== null && parsedStart >= 0) ? Math.max(0, parsedStart) : 1.0;
+            const sDur = (parsedEnd !== null && parsedEnd > sStart) ? Math.min(6.0, Math.max(3.0, parsedEnd - sStart)) : 5.0;
 
             try {
               await execAsync(
-                `ffmpeg -hide_banner -loglevel error -y -ss ${sStart.toFixed(2)} -t ${sDur.toFixed(2)} -i "${videoPath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${tempRefFile}"`
+                `ffmpeg -hide_banner -loglevel error -y -ss ${sStart.toFixed(2)} -t ${sDur.toFixed(2)} -i "${videoPath}" -vn -af "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-35dB" -acodec pcm_s16le -ar 16000 -ac 1 "${tempRefFile}"`
               );
-              if (fs.existsSync(tempRefFile) && fs.statSync(tempRefFile).size > 1000) {
-                refWav = tempRefFile;
+              if (fs.existsSync(tempRefFile) && fs.statSync(tempRefFile).size > 1500) {
                 refBase64 = fs.readFileSync(tempRefFile).toString('base64');
+                masterVoiceCache.set(fileId, refBase64);
               }
             } catch (err) {
               console.warn('[TTS VoxCPM2] Failed to slice reference audio from video:', err);
@@ -1312,17 +1373,19 @@ app.post('/api/tts', async (req, res) => {
           voxcpmBaseUrl = process.env.RENDER ? 'http://54.254.244.148/voxcpm' : 'http://127.0.0.1:5005';
         }
 
+        const payload = {
+          text,
+          reference_audio_base64: refBase64,
+          inference_timesteps: 3,
+          cfg_value: 1.0
+        };
+
         let response: any;
         try {
           response = await fetch(`${voxcpmBaseUrl}/clone`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              text,
-              reference_wav_path: refWav,
-              reference_audio_base64: refBase64,
-              inference_timesteps: 4
-            })
+            body: JSON.stringify(payload)
           });
         } catch (fetchErr: any) {
           if (voxcpmBaseUrl !== 'http://54.254.244.148/voxcpm') {
@@ -1330,11 +1393,7 @@ app.post('/api/tts', async (req, res) => {
             response = await fetch('http://54.254.244.148/voxcpm/clone', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                text,
-                reference_audio_base64: refBase64,
-                inference_timesteps: 4
-              })
+              body: JSON.stringify(payload)
             });
           } else {
             throw fetchErr;

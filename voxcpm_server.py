@@ -6,6 +6,7 @@ import base64
 import tempfile
 import asyncio
 import subprocess
+import hashlib
 import numpy as np
 import soundfile as sf
 import torch
@@ -14,8 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 
-# Optimize PyTorch CPU threading
-torch.set_num_threads(8)
+# Optimize PyTorch CPU threading (4 physical cores avoids hyperthreading overhead)
+torch.set_num_threads(4)
 
 app = FastAPI(title="VoxCPM2 Voice Cloning Service", version="1.0.0")
 
@@ -57,8 +58,8 @@ class CloneRequest(BaseModel):
     text: str
     reference_wav_path: Optional[str] = None
     reference_audio_base64: Optional[str] = None
-    cfg_value: Optional[float] = 2.0
-    inference_timesteps: Optional[int] = 4
+    cfg_value: Optional[float] = 1.0
+    inference_timesteps: Optional[int] = 3
 
 @app.post("/clone")
 async def clone_voice_json(req: CloneRequest):
@@ -68,15 +69,17 @@ async def clone_voice_json(req: CloneRequest):
     m = get_model()
     
     ref_path = req.reference_wav_path
-    temp_decoded_ref = None
 
     if req.reference_audio_base64:
         try:
             audio_raw = base64.b64decode(req.reference_audio_base64)
-            temp_decoded_ref = os.path.join(tempfile.gettempdir(), f"ref_in_{uuid.uuid4().hex}.wav")
-            with open(temp_decoded_ref, "wb") as f:
-                f.write(audio_raw)
-            ref_path = temp_decoded_ref
+            if len(audio_raw) > 500:
+                ref_hash = hashlib.md5(audio_raw).hexdigest()
+                cached_ref = os.path.join(tempfile.gettempdir(), f"voxcpm_ref_{ref_hash}.wav")
+                if not os.path.exists(cached_ref) or os.path.getsize(cached_ref) == 0:
+                    with open(cached_ref, "wb") as f:
+                        f.write(audio_raw)
+                ref_path = cached_ref
         except Exception as e:
             print(f"[VoxCPM2] Error decoding reference_audio_base64: {e}", flush=True)
 
@@ -88,6 +91,9 @@ async def clone_voice_json(req: CloneRequest):
     tmp_wav = os.path.join(tempfile.gettempdir(), f"voxcpm_{uid}.wav")
     tmp_mp3 = os.path.join(tempfile.gettempdir(), f"voxcpm_{uid}.mp3")
 
+    cfg_val = req.cfg_value if req.cfg_value is not None else 1.0
+    steps = req.inference_timesteps if req.inference_timesteps is not None else 3
+
     try:
         async with model_lock:
             loop = asyncio.get_event_loop()
@@ -96,8 +102,8 @@ async def clone_voice_json(req: CloneRequest):
             def _run_inference():
                 kwargs = {
                     "text": req.text.strip(),
-                    "cfg_value": req.cfg_value or 2.0,
-                    "inference_timesteps": req.inference_timesteps or 4,
+                    "cfg_value": cfg_val,
+                    "inference_timesteps": steps,
                 }
                 if ref_path:
                     kwargs["reference_wav_path"] = ref_path
@@ -109,7 +115,7 @@ async def clone_voice_json(req: CloneRequest):
 
         sample_rate = getattr(m.tts_model, "sample_rate", 48000)
         duration = len(wav) / sample_rate
-        print(f"[VoxCPM2] Generated {duration:.2f}s audio for text '{req.text[:30]}...' in {elapsed:.2f}s (ref: {bool(ref_path)})", flush=True)
+        print(f"[VoxCPM2] Generated {duration:.2f}s audio for text '{req.text[:30]}...' in {elapsed:.2f}s (ref: {bool(ref_path)}, steps={steps}, cfg={cfg_val})", flush=True)
 
         sf.write(tmp_wav, wav, sample_rate)
         subprocess.run(
@@ -127,7 +133,7 @@ async def clone_voice_json(req: CloneRequest):
             media_type = "audio/wav"
 
     finally:
-        for p in (tmp_wav, tmp_mp3, temp_decoded_ref):
+        for p in (tmp_wav, tmp_mp3):
             if p and os.path.exists(p):
                 try: os.remove(p)
                 except Exception: pass
