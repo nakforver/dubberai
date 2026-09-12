@@ -266,8 +266,21 @@ const videoRef = useRef<HTMLVideoElement>(null);
             masterVoiceRef.current = job.masterVoiceBase64;
           }
 
+          let lastGender: 'female' | 'male' = 'female';
           const newLines = job.lines.map((l: any, idx: number) => {
-            const lineGender: 'female' | 'male' = l.gender ? (String(l.gender).toLowerCase().includes('female') ? 'female' : 'male') : (idx % 2 === 0 ? 'female' : 'male');
+            let lineGender: 'female' | 'male';
+            const rawG = String(l.gender || '').toLowerCase().trim();
+            const rawSpk = String(l.speakerName || l.speaker || '').toLowerCase().trim();
+            
+            if (rawG.includes('female') || rawG.includes('woman') || rawG.includes('ស្រី') || rawSpk.includes('ស្រី')) {
+              lineGender = 'female';
+            } else if (rawG.includes('male') || rawG.includes('man') || rawG.includes('ប្រុស') || rawSpk.includes('ប្រុស')) {
+              lineGender = 'male';
+            } else {
+              lineGender = lastGender;
+            }
+            lastGender = lineGender;
+
             const defaultSpk = lineGender === 'male' ? 'char_male' : 'char_female';
             const speakerName = lineGender === 'male' ? 'តួប្រុស' : 'តួស្រី';
             return {

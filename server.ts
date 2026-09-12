@@ -319,17 +319,22 @@ function validateSubtitleLine(value: any, index: number): SubtitleLine {
     );
   }
   const rawGender = typeof value.gender === 'string' ? value.gender.toLowerCase().trim() : '';
+  const rawSpeaker = typeof value.speaker === 'string' ? value.speaker.trim() : (typeof value.speakerId === 'string' ? value.speakerId.trim() : '');
+  const rawSpeakerName = typeof value.speakerName === 'string' ? value.speakerName.trim() : '';
+
   let gender: 'female' | 'male' | undefined = undefined;
   if (rawGender.includes('female') || rawGender.includes('woman') || rawGender.includes('girl') || rawGender.includes('ស្រី')) {
     gender = 'female';
   } else if (rawGender.includes('male') || rawGender.includes('man') || rawGender.includes('boy') || rawGender.includes('ប្រុស')) {
     gender = 'male';
+  } else if (rawSpeakerName.includes('ស្រី') || rawSpeaker.includes('female')) {
+    gender = 'female';
+  } else if (rawSpeakerName.includes('ប្រុស') || rawSpeaker.includes('male')) {
+    gender = 'male';
   }
 
-  const rawSpeaker = typeof value.speaker === 'string' ? value.speaker.trim() : (typeof value.speakerId === 'string' ? value.speakerId.trim() : '');
-  const rawSpeakerName = typeof value.speakerName === 'string' ? value.speakerName.trim() : '';
-  const speaker = rawSpeaker || (gender === 'female' ? 'speaker_001' : 'speaker_002');
-  const speakerName = rawSpeakerName || (gender === 'female' ? 'Speaker 1 (ស្រី)' : 'Speaker 2 (ប្រុស)');
+  const speaker = rawSpeaker || (gender === 'male' ? 'speaker_002' : 'speaker_001');
+  const speakerName = rawSpeakerName || (gender === 'male' ? 'Speaker 2 (ប្រុស)' : 'Speaker 1 (ស្រី)');
 
   return {
     id,
@@ -368,19 +373,26 @@ function validateExportAudioMetadata(value: any): AudioSegmentMetadata[] {
       throw new Error(`Invalid end timestamp for ${item.key}`);
     }
     if (item.segmentId !== undefined && (typeof item.segmentId !== 'string' || !item.segmentId)) {
-      throw new Error(`Invalid segment ID for ${item.key}`);
+      throw new Error(`Invalid segmentId for ${item.key}`);
     }
-    if (
-      item.expectedDuration !== undefined &&
-      (!Number.isFinite(Number(item.expectedDuration)) || Number(item.expectedDuration) <= 0)
-    ) {
-      throw new Error(`Invalid expected TTS duration for ${item.key}`);
+    if (item.voiceId !== undefined && (typeof item.voiceId !== 'string' || !item.voiceId)) {
+      throw new Error(`Invalid voiceId for ${item.key}`);
+    }
+    if (item.speakerId !== undefined && (typeof item.speakerId !== 'string' || !item.speakerId)) {
+      throw new Error(`Invalid speakerId for ${item.key}`);
+    }
+    if (item.expectedDuration !== undefined && (!Number.isFinite(item.expectedDuration) || item.expectedDuration <= 0)) {
+      throw new Error(`Invalid expectedDuration for ${item.key}`);
     }
 
     return {
-      ...item,
+      key: item.key,
       start: String(item.start),
-      end: String(item.end)
+      end: String(item.end),
+      ...(item.segmentId ? { segmentId: String(item.segmentId) } : {}),
+      ...(item.voiceId ? { voiceId: String(item.voiceId) } : {}),
+      ...(item.speakerId ? { speakerId: String(item.speakerId) } : {}),
+      ...(item.expectedDuration !== undefined ? { expectedDuration: Number(item.expectedDuration) } : {})
     };
   });
 }
@@ -397,7 +409,36 @@ function validateSubtitleLines(lines: any): SubtitleLine[] {
   if (!Array.isArray(lines) || lines.length === 0) {
     throw new Error('Subtitle lines must be a non-empty array');
   }
-  return lines.map(validateSubtitleLine);
+  const validated = lines.map(validateSubtitleLine);
+
+  // 1. Build map of speakerId -> gender from all explicitly identified lines
+  const speakerGenderMap = new Map<string, 'female' | 'male'>();
+  for (const line of validated) {
+    if (line.speaker && line.gender && !speakerGenderMap.has(line.speaker)) {
+      speakerGenderMap.set(line.speaker, line.gender);
+    }
+  }
+
+  // 2. Consistency pass: ensure consistent gender per speaker, or dialogue scene continuity (NEVER alternating modulo)
+  let lastSceneGender: 'female' | 'male' = 'female';
+  for (let i = 0; i < validated.length; i++) {
+    const l = validated[i];
+    if (l.speaker && speakerGenderMap.has(l.speaker)) {
+      l.gender = speakerGenderMap.get(l.speaker);
+    } else if (!l.gender) {
+      l.gender = lastSceneGender;
+    }
+    if (l.gender) {
+      lastSceneGender = l.gender;
+    }
+    if (l.gender === 'female' && l.speakerName?.includes('(ប្រុស)')) {
+      l.speakerName = l.speakerName.replace('(ប្រុស)', '(ស្រី)');
+    } else if (l.gender === 'male' && l.speakerName?.includes('(ស្រី)')) {
+      l.speakerName = l.speakerName.replace('(ស្រី)', '(ប្រុស)');
+    }
+  }
+
+  return validated;
 }
 
 function mergeTranslatedSubtitleLine(
@@ -422,11 +463,11 @@ function mergeTranslatedSubtitleLine(
 
   const speaker = typeof translation?.speaker === 'string' && translation.speaker.trim()
     ? translation.speaker.trim()
-    : (originalLine.speaker || (gender === 'female' ? 'speaker_001' : 'speaker_002'));
+    : (originalLine.speaker || (gender === 'male' ? 'speaker_002' : 'speaker_001'));
 
   const speakerName = typeof translation?.speakerName === 'string' && translation.speakerName.trim()
     ? translation.speakerName.trim()
-    : (originalLine.speakerName || (gender === 'female' ? 'Speaker 1 (ស្រី)' : 'Speaker 2 (ប្រុស)'));
+    : (originalLine.speakerName || (gender === 'male' ? 'Speaker 2 (ប្រុស)' : 'Speaker 1 (ស្រី)'));
 
   return {
     id: originalLine.id,
@@ -977,6 +1018,7 @@ STRICT RULES:
 14. ALL translated "text" values must be Khmer.
 15. Return ONLY valid JSON.
 16. The output must contain exactly the same structure.
+17. Accurately assign or preserve the "gender" field as "female" or "male" for each dialogue based on the speaker and context. If women/court ladies speak, keep gender as "female". NEVER alternate female and male artificially.
 
 SOURCE SUBTITLES:
 ${JSON.stringify(chunk)}`
@@ -993,7 +1035,10 @@ ${JSON.stringify(chunk)}`
                     start: { type: Type.STRING },
                     end: { type: Type.STRING },
                     text: { type: Type.STRING },
-                    gender: { type: Type.STRING },
+                    gender: { 
+                      type: Type.STRING,
+                      enum: ["female", "male"]
+                    },
                     speaker: { type: Type.STRING },
                     speakerName: { type: Type.STRING }
                   },
@@ -1001,7 +1046,8 @@ ${JSON.stringify(chunk)}`
                     "id",
                     "start",
                     "end",
-                    "text"
+                    "text",
+                    "gender"
                   ]
                 }
               }
@@ -1412,8 +1458,13 @@ TRANSCRIPTION AND SEGMENTATION RULES:
 10. Continue processing until the END of the audio/video.
 11. If there are pauses or silence, do not invent dialogue during silence.
 12. If multiple people speak, preserve the chronological sequence of their speech.
-13. Perform SPEAKER DIARIZATION: Identify and assign a consistent speaker ID ("speaker_001", "speaker_002", "speaker_003", etc.) and speakerName (e.g. "Speaker 1 (ដុងយី)", "Speaker 2 (ព្រះរាជា)") for each dialogue. Maintain speaker consistency across the video.
-14. For each spoken dialogue, determine the speaker's vocal gender as "female" or "male".
+13. Perform SPEAKER DIARIZATION: Identify and assign a consistent speaker ID ("speaker_001", "speaker_002", "speaker_003", etc.) and speakerName (e.g. "Speaker 1 (ស្រី)", "Speaker 2 (ស្រី)" or "តួស្រី (ដុងយី)", "តួប្រុស") for each dialogue. Maintain speaker consistency across the video.
+14. VOCAL GENDER IDENTIFICATION (CRITICAL):
+    - Listen closely to the speaker's vocal pitch and timbre, and look at who is speaking in the video scene.
+    - If a woman, court lady, queen, or girl speaks, mark ALL their dialogues as "female".
+    - If a man, king, soldier, or boy speaks, mark ALL their dialogues as "male".
+    - In scenes where women / court ladies are speaking together (such as Dong Yi historical drama), EVERY sentence spoken by a female character MUST be marked "female". NEVER alternate between female and male artificially!
+    - Every single subtitle object MUST specify gender as exactly "female" or "male".
 15. ALL subtitle text must be translated into natural Khmer (Cambodian).
 16. Do NOT output the original-language transcript.
 17. Do NOT summarize.
@@ -1445,11 +1496,14 @@ Do not output an empty array unless there is absolutely no speech.` },
                     start: { type: Type.STRING },
                     end: { type: Type.STRING },
                     text: { type: Type.STRING },
-                    gender: { type: Type.STRING },
+                    gender: { 
+                      type: Type.STRING,
+                      enum: ["female", "male"]
+                    },
                     speaker: { type: Type.STRING },
                     speakerName: { type: Type.STRING }
                   },
-                  required: ["id", "start", "end", "text"]
+                  required: ["id", "start", "end", "text", "gender", "speaker", "speakerName"]
                 }
               }
             }
