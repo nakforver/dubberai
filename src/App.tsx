@@ -20,8 +20,15 @@ export default function App() {
   const [awsS3Bucket, setAwsS3Bucket] = useState(localStorage.getItem('aws_s3_bucket') || '');
   const [workflow, setWorkflow] = useState(localStorage.getItem('transcribe_workflow') || 'gemini');
   const [model, setModel] = useState(localStorage.getItem('gemini_model') || 'gemini-2.5-flash');
-  const [voice, setVoice] = useState<'Piseth' | 'Sreymom'>('Piseth');
+  const [voice, setVoice] = useState<'Piseth' | 'Sreymom' | 'VoxCPM2'>(
+    (localStorage.getItem('tts_voice') as 'Piseth' | 'Sreymom' | 'VoxCPM2') || 'Piseth'
+  );
   const [volume, setVolume] = useState(90);
+
+  const saveVoice = (v: 'Piseth' | 'Sreymom' | 'VoxCPM2') => {
+    setVoice(v);
+    localStorage.setItem('tts_voice', v);
+  };
 
   const saveApiKey = (key: string) => {
     setApiKey(key);
@@ -99,7 +106,7 @@ export default function App() {
             model={model}
             setModel={saveModel}
             voice={voice}
-            setVoice={setVoice}
+            setVoice={saveVoice}
             volume={volume}
             setVolume={setVolume}
           />

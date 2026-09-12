@@ -13,7 +13,7 @@ interface EditorProps {
   awsRegion: string;
   awsS3Bucket: string;
   workflow: string;
-  voice: 'Piseth' | 'Sreymom';
+  voice: 'Piseth' | 'Sreymom' | 'VoxCPM2';
   model: string;
 }
 
@@ -254,10 +254,17 @@ const videoRef = useRef<HTMLVideoElement>(null);
         return next;
       });
 
+      const currentLine = linesRef.current.find(l => l.id === lineId);
       const res = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice })
+        body: JSON.stringify({
+          text,
+          voice,
+          fileId: serverVideoFileId,
+          startTime: currentLine?.startTime,
+          endTime: currentLine?.endTime
+        })
       });
 
       if (!res.ok) {
@@ -1031,9 +1038,9 @@ const videoRef = useRef<HTMLVideoElement>(null);
                     <span className="font-mono tracking-tighter">{line.start} - {line.end}</span>
                   </div>
                   <div className="flex items-center gap-2">
-                     <div className="w-5 h-5 rounded bg-gray-800/80 flex items-center justify-center text-blue-400">
-                       <span className="text-[10px]">{voice === 'Piseth' ? '♂' : '♀'}</span>
-                     </div>
+                      <div className="w-5 h-5 rounded bg-gray-800/80 flex items-center justify-center text-blue-400">
+                        <span className="text-[10px]">{voice === 'Piseth' ? '♂' : voice === 'Sreymom' ? '♀' : '🎙️'}</span>
+                      </div>
                   </div>
                 </div>
                 <textarea 

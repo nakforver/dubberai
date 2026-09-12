@@ -18,8 +18,8 @@ interface SettingsProps {
   setWorkflow: (workflow: string) => void;
   model: string;
   setModel: (model: string) => void;
-  voice: 'Piseth' | 'Sreymom';
-  setVoice: (voice: 'Piseth' | 'Sreymom') => void;
+  voice: 'Piseth' | 'Sreymom' | 'VoxCPM2';
+  setVoice: (voice: 'Piseth' | 'Sreymom' | 'VoxCPM2') => void;
   volume: number;
   setVolume: (val: number) => void;
 }
@@ -259,33 +259,51 @@ export default function Settings({
             
             <div className="flex items-center justify-between">
                <div className="text-sm font-medium text-gray-200">សំឡេងអ្នកអាន</div>
-               <div className="text-sm text-pink-500 font-bold bg-pink-900/10 px-3 py-1 rounded-lg border border-pink-900/30">{voice}</div>
+               <div className="text-xs text-pink-400 font-bold bg-pink-900/20 px-3 py-1 rounded-lg border border-pink-900/40">
+                 {voice === 'VoxCPM2' ? '🎙️ VoxCPM2 (Voice Clone)' : voice}
+               </div>
             </div>
             
-            <div className="flex gap-3">
+            <div className="grid grid-cols-1 gap-2.5">
+              <div className="flex gap-2.5">
+                <button 
+                  onClick={() => setVoice('Piseth')}
+                  className={`flex-1 py-2.5 rounded-xl flex items-center justify-center gap-2 text-sm border transition ${
+                    voice === 'Piseth' 
+                      ? 'bg-pink-900/20 text-pink-400 border-pink-700 shadow-[0_0_10px_rgba(219,39,119,0.15)]' 
+                      : 'bg-gray-800/50 hover:bg-gray-800 text-gray-300 border-gray-700/50'
+                  }`}
+                >
+                  <span className="text-blue-400 text-base">👨</span> <span className="font-bold">ប្រុស (Piseth)</span>
+                </button>
+                <button 
+                  onClick={() => setVoice('Sreymom')}
+                  className={`flex-1 py-2.5 rounded-xl flex items-center justify-center gap-2 text-sm border transition ${
+                    voice === 'Sreymom' 
+                      ? 'bg-pink-900/20 text-pink-400 border-pink-700 shadow-[0_0_10px_rgba(219,39,119,0.15)]' 
+                      : 'bg-gray-800/50 hover:bg-gray-800 text-gray-300 border-gray-700/50'
+                  }`}
+                >
+                  <span className="text-pink-400 text-base">👩</span> <span className="font-bold">ស្រី (Sreymom)</span>
+                </button>
+              </div>
               <button 
-                onClick={() => setVoice('Piseth')}
-                className={`flex-1 py-3 rounded-xl flex items-center justify-center gap-2 text-sm border transition ${
-                  voice === 'Piseth' 
-                    ? 'bg-pink-900/10 text-pink-400 border-pink-900/40 shadow-[0_0_10px_rgba(219,39,119,0.05)]' 
+                onClick={() => setVoice('VoxCPM2')}
+                className={`w-full py-3 rounded-xl flex items-center justify-center gap-2 text-sm border transition ${
+                  voice === 'VoxCPM2' 
+                    ? 'bg-gradient-to-r from-purple-900/30 via-indigo-900/30 to-purple-900/30 text-purple-300 border-purple-600 shadow-[0_0_15px_rgba(168,85,247,0.25)]' 
                     : 'bg-gray-800/50 hover:bg-gray-800 text-gray-300 border-gray-700/50'
                 }`}
               >
-                <span className="text-blue-400 text-lg">👨</span> <span className="font-bold">ប្រុស (Piseth)</span>
-              </button>
-              <button 
-                onClick={() => setVoice('Sreymom')}
-                className={`flex-1 py-3 rounded-xl flex items-center justify-center gap-2 text-sm border transition ${
-                  voice === 'Sreymom' 
-                    ? 'bg-pink-900/10 text-pink-400 border-pink-900/40 shadow-[0_0_10px_rgba(219,39,119,0.05)]' 
-                    : 'bg-gray-800/50 hover:bg-gray-800 text-gray-300 border-gray-700/50'
-                }`}
-              >
-                <span className="text-pink-400 text-lg">👩</span> <span className="font-bold">ស្រី (Sreymom)</span>
+                <span className="text-purple-400 text-lg">🎙️</span>
+                <span className="font-bold">VoxCPM2 (Clone សំឡេងពីវីដេអូដើម)</span>
+                <span className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded border border-purple-500/30">AI Clone</span>
               </button>
             </div>
             <div className="text-[11px] text-gray-500 leading-relaxed bg-gray-950/50 p-3 rounded-lg border border-gray-800/50">
-              ជ្រើសរើសសំឡេងប្រុសឬស្រីនៅត្រង់នេះ។ អ្នកអាចប្ដូរវាមួយៗមួយៗនៅក្នុងវីដេអូ។
+              {voice === 'VoxCPM2' 
+                ? '✨ មុខងារ VoxCPM2 នឹងទាញយកសំឡេងនិយាយផ្ទាល់ពីវីដេអូដើមរបស់អ្នក មកធ្វើ Voice Clone និយាយភាសាខ្មែរតាមទម្រង់សំឡេងដើម!'
+                : 'ជ្រើសរើសសំឡេងប្រុស ឬស្រី (Edge-TTS)។ អ្នកក៏អាចជ្រើសរើស VoxCPM2 ដើម្បី Clone សំឡេងពីវីដេអូដើមបានផងដែរ។'}
             </div>
           </div>
         </section>

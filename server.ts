@@ -1256,9 +1256,92 @@ app.get('/api/transcribe/status', (req, res) => {
 
 app.post('/api/tts', async (req, res) => {
   try {
-    const { text, voice } = req.body;
+    const { text, voice, fileId, startTime, endTime } = req.body;
     if (typeof text !== 'string' || text.trim().length === 0) {
       return res.status(400).json({ error: 'TTS text is required' });
+    }
+
+    if (voice === 'VoxCPM2') {
+      let tempRefFile: string | null = null;
+      try {
+        let refWav: string | null = null;
+
+        if (fileId) {
+          let videoPath = path.join(os.tmpdir(), `upload_${fileId}`);
+          if (!fs.existsSync(videoPath)) {
+            // Check if there are chunk files
+            const part0 = path.join(os.tmpdir(), `upload_${fileId}_part_0`);
+            if (fs.existsSync(part0)) {
+              let i = 0;
+              const assembled = fs.createWriteStream(videoPath);
+              while (fs.existsSync(path.join(os.tmpdir(), `upload_${fileId}_part_${i}`))) {
+                const chunkData = fs.readFileSync(path.join(os.tmpdir(), `upload_${fileId}_part_${i}`));
+                assembled.write(chunkData);
+                i++;
+              }
+              assembled.end();
+            }
+          }
+
+          if (fs.existsSync(videoPath)) {
+            tempRefFile = path.join(os.tmpdir(), `ref_vox_${crypto.randomUUID()}.wav`);
+            const sStart = (typeof startTime === 'number' && Number.isFinite(startTime) && startTime >= 0)
+              ? Math.max(0, startTime - 0.2)
+              : 1.0;
+            const sDur = (typeof endTime === 'number' && Number.isFinite(endTime) && endTime > sStart)
+              ? Math.min(8.0, Math.max(3.0, endTime - sStart))
+              : 5.0;
+
+            try {
+              await execAsync(
+                `ffmpeg -hide_banner -loglevel error -y -ss ${sStart.toFixed(2)} -t ${sDur.toFixed(2)} -i "${videoPath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${tempRefFile}"`
+              );
+              if (fs.existsSync(tempRefFile) && fs.statSync(tempRefFile).size > 1000) {
+                refWav = tempRefFile;
+              }
+            } catch (err) {
+              console.warn('[TTS VoxCPM2] Failed to slice reference audio from video:', err);
+            }
+          }
+        }
+
+        const voxcpmBaseUrl = process.env.VOXCPM_API_URL || 'http://127.0.0.1:5005';
+        const response = await fetch(`${voxcpmBaseUrl}/clone`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text,
+            reference_wav_path: refWav,
+            inference_timesteps: 4
+          })
+        });
+
+        if (!response.ok) {
+          const errBody = await response.text();
+          throw new Error(`VoxCPM2 Service Error (${response.status}): ${errBody}`);
+        }
+
+        const durationHeader = response.headers.get('X-TTS-Duration');
+        const audioBuffer = Buffer.from(await response.arrayBuffer());
+        const contentType = response.headers.get('Content-Type') || 'audio/mpeg';
+
+        res.set('Content-Type', contentType);
+        if (durationHeader) {
+          res.set('X-TTS-Duration', durationHeader);
+        } else {
+          const tempOut = path.join(os.tmpdir(), `vox_${crypto.randomUUID()}.mp3`);
+          fs.writeFileSync(tempOut, audioBuffer);
+          const probed = await probeAudio(tempOut);
+          fs.unlinkSync(tempOut);
+          res.set('X-TTS-Duration', probed.duration.toFixed(3));
+        }
+
+        return res.send(audioBuffer);
+      } finally {
+        if (tempRefFile && fs.existsSync(tempRefFile)) {
+          try { fs.unlinkSync(tempRefFile); } catch (e) {}
+        }
+      }
     }
     
     const targetVoice = voice === 'Sreymom' ? 'km-KH-SreymomNeural' : 'km-KH-PisethNeural';
