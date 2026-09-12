@@ -175,7 +175,7 @@ const MAX_ALLOWED_TTS_OVERSPEECH = 0.25;
 // as a chain when the requested rate is above its single-filter limit of 2x.
 const MAX_TTS_SPEED_INCREASE = 1.75;
 
-app.use(express.json());
+app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 
 const upload = multer({ dest: os.tmpdir(), limits: { fileSize: 500 * 1024 * 1024 } });
