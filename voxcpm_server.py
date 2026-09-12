@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import uuid
+import base64
 import tempfile
 import asyncio
 import subprocess
@@ -55,6 +56,7 @@ async def health():
 class CloneRequest(BaseModel):
     text: str
     reference_wav_path: Optional[str] = None
+    reference_audio_base64: Optional[str] = None
     cfg_value: Optional[float] = 2.0
     inference_timesteps: Optional[int] = 4
 
@@ -66,39 +68,50 @@ async def clone_voice_json(req: CloneRequest):
     m = get_model()
     
     ref_path = req.reference_wav_path
+    temp_decoded_ref = None
+
+    if req.reference_audio_base64:
+        try:
+            audio_raw = base64.b64decode(req.reference_audio_base64)
+            temp_decoded_ref = os.path.join(tempfile.gettempdir(), f"ref_in_{uuid.uuid4().hex}.wav")
+            with open(temp_decoded_ref, "wb") as f:
+                f.write(audio_raw)
+            ref_path = temp_decoded_ref
+        except Exception as e:
+            print(f"[VoxCPM2] Error decoding reference_audio_base64: {e}", flush=True)
+
     if ref_path and (not os.path.exists(ref_path) or os.path.getsize(ref_path) == 0):
         print(f"[VoxCPM2] Warning: Reference path '{ref_path}' not found, falling back to unconditioned voice", flush=True)
         ref_path = None
 
-    async with model_lock:
-        loop = asyncio.get_event_loop()
-        t0 = time.time()
-        
-        def _run_inference():
-            kwargs = {
-                "text": req.text.strip(),
-                "cfg_value": req.cfg_value or 2.0,
-                "inference_timesteps": req.inference_timesteps or 4,
-            }
-            if ref_path:
-                kwargs["reference_wav_path"] = ref_path
-            
-            return m.generate(**kwargs)
-
-        wav = await loop.run_in_executor(None, _run_inference)
-        elapsed = time.time() - t0
-
-    sample_rate = getattr(m.tts_model, "sample_rate", 48000)
-    duration = len(wav) / sample_rate
-    print(f"[VoxCPM2] Generated {duration:.2f}s audio for text '{req.text[:30]}...' in {elapsed:.2f}s (ref: {bool(ref_path)})", flush=True)
-
     uid = uuid.uuid4().hex
     tmp_wav = os.path.join(tempfile.gettempdir(), f"voxcpm_{uid}.wav")
     tmp_mp3 = os.path.join(tempfile.gettempdir(), f"voxcpm_{uid}.mp3")
-    
+
     try:
+        async with model_lock:
+            loop = asyncio.get_event_loop()
+            t0 = time.time()
+            
+            def _run_inference():
+                kwargs = {
+                    "text": req.text.strip(),
+                    "cfg_value": req.cfg_value or 2.0,
+                    "inference_timesteps": req.inference_timesteps or 4,
+                }
+                if ref_path:
+                    kwargs["reference_wav_path"] = ref_path
+                
+                return m.generate(**kwargs)
+
+            wav = await loop.run_in_executor(None, _run_inference)
+            elapsed = time.time() - t0
+
+        sample_rate = getattr(m.tts_model, "sample_rate", 48000)
+        duration = len(wav) / sample_rate
+        print(f"[VoxCPM2] Generated {duration:.2f}s audio for text '{req.text[:30]}...' in {elapsed:.2f}s (ref: {bool(ref_path)})", flush=True)
+
         sf.write(tmp_wav, wav, sample_rate)
-        # Convert to high-quality MP3 for optimal web streaming and fast network transfer
         subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", tmp_wav, "-c:a", "libmp3lame", "-b:a", "192k", tmp_mp3],
             check=False
@@ -112,9 +125,10 @@ async def clone_voice_json(req: CloneRequest):
             with open(tmp_wav, "rb") as f:
                 audio_bytes = f.read()
             media_type = "audio/wav"
+
     finally:
-        for p in (tmp_wav, tmp_mp3):
-            if os.path.exists(p):
+        for p in (tmp_wav, tmp_mp3, temp_decoded_ref):
+            if p and os.path.exists(p):
                 try: os.remove(p)
                 except Exception: pass
 

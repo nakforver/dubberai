@@ -1265,6 +1265,7 @@ app.post('/api/tts', async (req, res) => {
       let tempRefFile: string | null = null;
       try {
         let refWav: string | null = null;
+        let refBase64: string | null = null;
 
         if (fileId) {
           let videoPath = path.join(os.tmpdir(), `upload_${fileId}`);
@@ -1298,6 +1299,7 @@ app.post('/api/tts', async (req, res) => {
               );
               if (fs.existsSync(tempRefFile) && fs.statSync(tempRefFile).size > 1000) {
                 refWav = tempRefFile;
+                refBase64 = fs.readFileSync(tempRefFile).toString('base64');
               }
             } catch (err) {
               console.warn('[TTS VoxCPM2] Failed to slice reference audio from video:', err);
@@ -1305,16 +1307,39 @@ app.post('/api/tts', async (req, res) => {
           }
         }
 
-        const voxcpmBaseUrl = process.env.VOXCPM_API_URL || 'http://127.0.0.1:5005';
-        const response = await fetch(`${voxcpmBaseUrl}/clone`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text,
-            reference_wav_path: refWav,
-            inference_timesteps: 4
-          })
-        });
+        let voxcpmBaseUrl = process.env.VOXCPM_API_URL;
+        if (!voxcpmBaseUrl) {
+          voxcpmBaseUrl = process.env.RENDER ? 'http://54.254.244.148/voxcpm' : 'http://127.0.0.1:5005';
+        }
+
+        let response: any;
+        try {
+          response = await fetch(`${voxcpmBaseUrl}/clone`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text,
+              reference_wav_path: refWav,
+              reference_audio_base64: refBase64,
+              inference_timesteps: 4
+            })
+          });
+        } catch (fetchErr: any) {
+          if (voxcpmBaseUrl !== 'http://54.254.244.148/voxcpm') {
+            console.warn(`[TTS VoxCPM2] Failed connecting to ${voxcpmBaseUrl} (${fetchErr.message}), falling back to http://54.254.244.148/voxcpm...`);
+            response = await fetch('http://54.254.244.148/voxcpm/clone', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                text,
+                reference_audio_base64: refBase64,
+                inference_timesteps: 4
+              })
+            });
+          } else {
+            throw fetchErr;
+          }
+        }
 
         if (!response.ok) {
           const errBody = await response.text();
