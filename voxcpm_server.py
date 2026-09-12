@@ -159,9 +159,6 @@ async def clone_voice_json(req: CloneRequest):
                 }
                 if ref_path:
                     kwargs["reference_wav_path"] = ref_path
-                    if req.prompt_text and req.prompt_text.strip():
-                        kwargs["prompt_wav_path"] = req.prompt_wav_path or ref_path
-                        kwargs["prompt_text"] = req.prompt_text.strip()
                 
                 return m.generate(**kwargs)
 

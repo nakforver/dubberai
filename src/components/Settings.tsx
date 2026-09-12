@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { ArrowLeft, Key, Plus, Volume2, ChevronRight } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { ArrowLeft, Key, Volume2, ChevronRight, Cpu, RotateCcw } from 'lucide-react';
 import { ViewState } from '../types';
 
 interface SettingsProps {
@@ -32,6 +32,51 @@ export default function Settings({
   
   const [testMessage, setTestMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [isTesting, setIsTesting] = useState(false);
+
+  // Token usage state
+  const [tokenUsage, setTokenUsage] = useState<{
+    totalPromptTokens: number;
+    totalCandidatesTokens: number;
+    totalTokens: number;
+    callCount: number;
+    lastModel: string;
+    lastUpdated: string | null;
+  } | null>(null);
+  const [isResettingTokens, setIsResettingTokens] = useState(false);
+
+  // Model context window limits (tokens)
+  const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+    'gemini-2.5-flash': 1_048_576,
+    'gemini-3.5-flash': 1_048_576,
+    'gemini-3.6-flash': 1_048_576,
+    'gemini-3.7-flash': 1_048_576,
+  };
+
+  const fetchTokenUsage = async () => {
+    try {
+      const res = await fetch('/api/token-usage');
+      if (res.ok) {
+        const data = await res.json();
+        setTokenUsage(data);
+      }
+    } catch (_) {}
+  };
+
+  useEffect(() => {
+    fetchTokenUsage();
+    const interval = setInterval(fetchTokenUsage, 10000); // refresh every 10s
+    return () => clearInterval(interval);
+  }, []);
+
+  const resetTokenUsage = async () => {
+    setIsResettingTokens(true);
+    try {
+      await fetch('/api/token-usage/reset', { method: 'POST' });
+      await fetchTokenUsage();
+    } catch (_) {} finally {
+      setIsResettingTokens(false);
+    }
+  };
 
   return (
     <div className="flex flex-col flex-1 h-screen bg-[#0f0f13]">
@@ -308,7 +353,94 @@ export default function Settings({
           </div>
         </section>
 
+        {/* Token Usage Section */}
+        <section>
+          <h2 className="text-[11px] font-bold text-gray-500 mb-3 uppercase tracking-widest pl-1">
+            Token Usage (Gemini)
+          </h2>
+          <div className="bg-gray-900/80 rounded-2xl p-4 border border-gray-800 shadow-sm space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-1.5 bg-purple-900/20 rounded-lg">
+                  <Cpu size={16} className="text-purple-400" />
+                </div>
+                <span className="text-sm font-medium text-gray-200">
+                  {tokenUsage
+                    ? `${tokenUsage.totalTokens.toLocaleString()} tokens`
+                    : '--- tokens'}
+                </span>
+              </div>
+              <button
+                onClick={resetTokenUsage}
+                disabled={isResettingTokens}
+                title="Reset token counter"
+                className="p-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 transition disabled:opacity-40"
+              >
+                <RotateCcw size={14} className={isResettingTokens ? 'animate-spin' : ''} />
+              </button>
+            </div>
+
+            {/* Progress bar vs model context window */}
+            {(() => {
+              const limit = MODEL_CONTEXT_WINDOWS[model] ?? 1_048_576;
+              const used = tokenUsage?.totalTokens ?? 0;
+              const pct = Math.min(100, (used / limit) * 100);
+              const barColor = pct > 80 ? 'from-red-700 to-red-500' : pct > 50 ? 'from-yellow-700 to-yellow-500' : 'from-purple-700 to-purple-500';
+              return (
+                <div>
+                  <div className="w-full bg-gray-800 h-2 rounded-full relative overflow-hidden">
+                    <div
+                      className={`absolute left-0 top-0 bottom-0 bg-gradient-to-r ${barColor} rounded-full transition-all duration-500`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between mt-1.5">
+                    <span className="text-[10px] text-gray-500">
+                      {used.toLocaleString()} / {limit.toLocaleString()} tokens ({pct.toFixed(1)}%)
+                    </span>
+                    <span className="text-[10px] text-gray-600">
+                      {(limit - used).toLocaleString()} នៅសល់
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Stats row */}
+            <div className="grid grid-cols-3 gap-2 pt-1">
+              <div className="bg-gray-800/60 rounded-xl p-2.5 text-center">
+                <div className="text-[11px] text-gray-500 mb-1">Prompt</div>
+                <div className="text-xs font-bold text-blue-400">
+                  {tokenUsage ? tokenUsage.totalPromptTokens.toLocaleString() : '—'}
+                </div>
+              </div>
+              <div className="bg-gray-800/60 rounded-xl p-2.5 text-center">
+                <div className="text-[11px] text-gray-500 mb-1">Output</div>
+                <div className="text-xs font-bold text-green-400">
+                  {tokenUsage ? tokenUsage.totalCandidatesTokens.toLocaleString() : '—'}
+                </div>
+              </div>
+              <div className="bg-gray-800/60 rounded-xl p-2.5 text-center">
+                <div className="text-[11px] text-gray-500 mb-1">Calls</div>
+                <div className="text-xs font-bold text-purple-400">
+                  {tokenUsage ? tokenUsage.callCount : '—'}
+                </div>
+              </div>
+            </div>
+
+            {tokenUsage?.lastUpdated && (
+              <div className="text-[10px] text-gray-600 text-right">
+                Updated: {new Date(tokenUsage.lastUpdated).toLocaleTimeString()}
+              </div>
+            )}
+            <div className="text-[11px] text-gray-600 leading-relaxed">
+              Token count ប្រមូលពី session ចាប់ផ្ដើមម្ដងៗ។ ចុចប៊ូតុង reset ដើម្បីលប់ counter។
+            </div>
+          </div>
+        </section>
+
         {/* Volume Section */}
+
         <section>
           <div className="bg-gray-900/80 rounded-2xl p-5 border border-gray-800 shadow-sm">
             <div className="flex items-center justify-between mb-5">

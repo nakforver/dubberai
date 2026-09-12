@@ -641,6 +641,48 @@ const jobs = new Map<string, {
   masterVoices?: { female?: string | null; male?: string | null },
   speakers?: Record<string, SpeakerVoiceProfile>
 }>();
+
+// Global token usage tracker — accumulates across all Gemini API calls per session
+const tokenUsageTracker = {
+  totalPromptTokens: 0,
+  totalCandidatesTokens: 0,
+  totalTokens: 0,
+  callCount: 0,
+  lastModel: '',
+  lastUpdated: null as string | null,
+  history: [] as Array<{
+    model: string;
+    promptTokens: number;
+    candidatesTokens: number;
+    totalTokens: number;
+    timestamp: string;
+  }>
+};
+
+function trackTokenUsage(model: string, usageMetadata: any) {
+  if (!usageMetadata) return;
+  const promptTokens = usageMetadata.promptTokenCount || 0;
+  const candidatesTokens = usageMetadata.candidatesTokenCount || 0;
+  const totalTokens = usageMetadata.totalTokenCount || (promptTokens + candidatesTokens);
+  tokenUsageTracker.totalPromptTokens += promptTokens;
+  tokenUsageTracker.totalCandidatesTokens += candidatesTokens;
+  tokenUsageTracker.totalTokens += totalTokens;
+  tokenUsageTracker.callCount += 1;
+  tokenUsageTracker.lastModel = model;
+  tokenUsageTracker.lastUpdated = new Date().toISOString();
+  tokenUsageTracker.history.push({
+    model,
+    promptTokens,
+    candidatesTokens,
+    totalTokens,
+    timestamp: new Date().toISOString()
+  });
+  // Keep only last 100 entries
+  if (tokenUsageTracker.history.length > 100) {
+    tokenUsageTracker.history = tokenUsageTracker.history.slice(-100);
+  }
+  console.log(`[Token Usage] model=${model} prompt=${promptTokens} candidates=${candidatesTokens} total=${totalTokens} | cumulative=${tokenUsageTracker.totalTokens}`);
+}
 const exportJobs = new Map<string, { status: string; error?: string; path?: string; progress?: number; }>();
 const exportCache = new Map<string, string>();
 const masterVoiceCache = new Map<string, string>();
@@ -967,6 +1009,7 @@ ${JSON.stringify(chunk)}`
           });
 
         let responseText = response.text || '';
+        trackTokenUsage(geminiModel, response.usageMetadata);
 
         responseText = responseText
           .replace(/^\s*```json\s*/, '')
@@ -1250,6 +1293,7 @@ if (activeModel === 'amazon') {
                      });
                      
                      let responseText = response.text || '';
+                     trackTokenUsage(activeGeminiModel, response.usageMetadata);
                      const cleanedResponse = responseText.trim();
                       const parsedChunk = JSON.parse(cleanedResponse);
 
@@ -1294,10 +1338,13 @@ if (activeModel === 'amazon') {
             female: Object.values(speakers).find(s => s.gender === 'female' && s.referenceAudioBase64)?.referenceAudioBase64 || null,
             male: Object.values(speakers).find(s => s.gender === 'male' && s.referenceAudioBase64)?.referenceAudioBase64 || null
           };
-          const masterVoiceBase64 = masterVoices.female || masterVoices.male;
-          if (fs.existsSync(filePath)) trackUploadedVideo(fileId);
-          
-          jobs.set(jobId, { status: 'done', progress: 100, lines: translatedLines, masterVoiceBase64, masterVoices, speakers });
+           const masterVoiceBase64 = masterVoices.female || masterVoices.male;
+           if (masterVoices.female) femaleVoiceCache.set(fileId, masterVoices.female);
+           if (masterVoices.male) maleVoiceCache.set(fileId, masterVoices.male);
+           if (masterVoiceBase64) masterVoiceCache.set(fileId, masterVoiceBase64);
+           if (fs.existsSync(filePath)) trackUploadedVideo(fileId);
+           
+           jobs.set(jobId, { status: 'done', progress: 100, lines: translatedLines, masterVoiceBase64, masterVoices, speakers });
           return; // Exit here for Amazon
       }
       
@@ -1424,6 +1471,7 @@ Do not output an empty array unless there is absolutely no speech.` },
       }
 
       let responseText = response?.text || '';
+      trackTokenUsage(activeGeminiModel, response?.usageMetadata);
       responseText = responseText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
       
       let lines;
@@ -1460,6 +1508,9 @@ Do not output an empty array unless there is absolutely no speech.` },
         male: Object.values(speakers).find(s => s.gender === 'male' && s.referenceAudioBase64)?.referenceAudioBase64 || null
       };
       const masterVoiceBase64 = masterVoices.female || masterVoices.male;
+      if (masterVoices.female) femaleVoiceCache.set(fileId, masterVoices.female);
+      if (masterVoices.male) maleVoiceCache.set(fileId, masterVoices.male);
+      if (masterVoiceBase64) masterVoiceCache.set(fileId, masterVoiceBase64);
       if (fs.existsSync(filePath)) trackUploadedVideo(fileId);
       try {
         await currentAi.files.delete({ name: uploadResult.name });
@@ -1522,6 +1573,32 @@ app.get('/api/debug/jobs', (req, res) => {
     }
     res.json(allJobs);
 });
+
+// Token usage tracking endpoints
+app.get('/api/token-usage', (req, res) => {
+  res.json({
+    totalPromptTokens: tokenUsageTracker.totalPromptTokens,
+    totalCandidatesTokens: tokenUsageTracker.totalCandidatesTokens,
+    totalTokens: tokenUsageTracker.totalTokens,
+    callCount: tokenUsageTracker.callCount,
+    lastModel: tokenUsageTracker.lastModel,
+    lastUpdated: tokenUsageTracker.lastUpdated,
+    recentHistory: tokenUsageTracker.history.slice(-20)
+  });
+});
+
+app.post('/api/token-usage/reset', (req, res) => {
+  tokenUsageTracker.totalPromptTokens = 0;
+  tokenUsageTracker.totalCandidatesTokens = 0;
+  tokenUsageTracker.totalTokens = 0;
+  tokenUsageTracker.callCount = 0;
+  tokenUsageTracker.lastModel = '';
+  tokenUsageTracker.lastUpdated = null;
+  tokenUsageTracker.history = [];
+  res.json({ success: true });
+});
+
+
 
 app.get('/api/transcribe/status', (req, res) => {
   const jobId = req.query.jobId as string;
@@ -1586,6 +1663,11 @@ app.post('/api/tts', async (req, res) => {
           }
         }
 
+        // Priority 4: Fallback to general master voice from video
+        if (!refBase64 && fileId && masterVoiceCache.has(fileId)) {
+          refBase64 = masterVoiceCache.get(fileId) || null;
+        }
+
         let voxcpmBaseUrl = process.env.VOXCPM_API_URL;
         if (!voxcpmBaseUrl) {
           voxcpmBaseUrl = process.env.RENDER ? 'http://54.254.244.148/voxcpm' : 'http://127.0.0.1:5005';
@@ -1599,9 +1681,6 @@ app.post('/api/tts', async (req, res) => {
         };
         if (gender) {
           payload.gender = gender;
-        }
-        if (promptAudioText) {
-          payload.prompt_text = promptAudioText;
         }
 
         let response: any;
