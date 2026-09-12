@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { ArrowLeft, Music, LayoutGrid, MoreVertical, Play, Pause, Mic, FileAudio, Download, CheckSquare, Square, Volume2, CheckCircle2, Loader2, Scissors, Upload, Sparkles, UserPlus, Trash2, Users } from 'lucide-react';
+import { ArrowLeft, Music, LayoutGrid, MoreVertical, Play, Pause, Mic, FileAudio, Download, CheckSquare, Square, Volume2, CheckCircle2, Loader2, Scissors, Upload, Sparkles, UserPlus, Trash2, Users, ChevronDown } from 'lucide-react';
 import { ViewState, SubtitleLine, CharacterProfile, SpeakerProfile } from '../types';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
@@ -60,6 +60,7 @@ export default function Editor({ onNavigate, videoFile, apiKey, awsAccessKeyId, 
     charactersRef.current = characters;
   }, [characters]);
 
+  const [isSpeakersExpanded, setIsSpeakersExpanded] = useState(false);
   const [extractingCharId, setExtractingCharId] = useState<string | null>(null);
   const [playingCharAudioId, setPlayingCharAudioId] = useState<string | null>(null);
   const charAudioPlayerRef = useRef<HTMLAudioElement | null>(null);
@@ -901,14 +902,14 @@ const videoRef = useRef<HTMLVideoElement>(null);
   const totalCount = lines.length;
 
   return (
-    <div className="flex flex-col h-full bg-[#0f0f13]">
+    <div className="flex flex-col h-full bg-[#0f0f13] overflow-hidden min-h-0">
       {/* Top Header */}
       <div className="flex items-center justify-between p-4 bg-gray-950/80 backdrop-blur-md z-10">
         <button onClick={() => onNavigate('home')} className="p-2 -ml-2 text-gray-300 hover:text-white transition">
           <ArrowLeft size={24} />
         </button>
         <div className="truncate flex-1 text-center font-medium text-sm text-gray-200 px-4">
-          {videoFile?.name || '[2010년 사극 레전드] 동이 Dong Yi.mp4'}
+          {videoFile?.name || '[2010년 사극 레전ដ] 동이 Dong Yi.mp4'}
         </div>
         <div className="flex items-center gap-4 text-gray-400">
           <Music size={20} className="hover:text-white cursor-pointer" />
@@ -933,166 +934,182 @@ const videoRef = useRef<HTMLVideoElement>(null);
         )}
       </div>
 
-      {/* Speaker Identity Voices Control Panel (គ្រប់គ្រងសំឡេងតួអង្គតាម Speaker Diarization) */}
-      <div className="bg-gradient-to-r from-gray-950 via-[#131122] to-gray-950 border-b border-gray-800 p-3 shrink-0">
-        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+      {/* Speaker Identity Voices Control Panel (Collapsible Accordion) */}
+      <div className="bg-gradient-to-r from-gray-950 via-[#131122] to-gray-950 border-b border-gray-800 shrink-0">
+        <div 
+          onClick={() => setIsSpeakersExpanded(!isSpeakersExpanded)}
+          className="flex items-center justify-between p-2.5 px-3 cursor-pointer hover:bg-white/[0.03] transition select-none"
+        >
           <div className="flex items-center gap-2">
-            <Users size={16} className="text-pink-400" />
-            <span className="text-xs sm:text-sm font-bold text-pink-400">🎙️ សំឡេងតួអង្គដើមតាម Speaker Diarization (VoxCPM2 Identity Mapping)</span>
-            <span className="text-[10px] text-gray-400 hidden md:inline">រក្សាអត្តសញ្ញាណសំឡេងតាមតួអង្គនីមួយៗ មិនច្របូកច្របល់</span>
+            <Users size={15} className="text-pink-400 shrink-0" />
+            <span className="text-xs font-bold text-pink-400 truncate">🎙️ សំឡេងតួអង្គ (Speaker Diarization)</span>
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-pink-950/80 text-pink-300 border border-pink-700/40 shrink-0">
+              {characters.length}
+            </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={handleAddSpeaker}
-              className="px-2 py-1 rounded-lg text-xs font-semibold bg-pink-900/40 hover:bg-pink-800/60 text-pink-200 border border-pink-700/50 flex items-center gap-1 transition"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleAddSpeaker();
+                if (!isSpeakersExpanded) setIsSpeakersExpanded(true);
+              }}
+              className="px-2 py-0.5 rounded-lg text-[11px] font-semibold bg-pink-900/40 hover:bg-pink-800/60 text-pink-200 border border-pink-700/50 flex items-center gap-1 transition"
               title="បន្ថែម Speaker ថ្មី"
             >
-              <UserPlus size={13} />
-              <span>+ បន្ថែម Speaker</span>
+              <UserPlus size={12} />
+              <span>+ Speaker</span>
             </button>
-            <span className="text-[10px] text-gray-500 hidden sm:inline">VoxCPM2 Neural Cloning</span>
+            <ChevronDown 
+              size={16} 
+              className={`text-gray-400 transition-transform duration-200 ${isSpeakersExpanded ? 'rotate-180 text-pink-400' : ''}`} 
+            />
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-          {characters.map((char) => (
-            <div
-              key={char.id}
-              className={`rounded-xl p-2.5 border transition-all ${
-                char.gender === 'female'
-                  ? 'bg-pink-950/20 border-pink-900/40 hover:border-pink-800/60'
-                  : 'bg-blue-950/20 border-blue-900/40 hover:border-blue-800/60'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="flex items-center gap-1.5 font-medium text-xs">
-                  <button
-                    type="button"
-                    onClick={() => handleToggleSpeakerGender(char.id)}
-                    title="ចុចដើម្បីប្តូរ ស្រី / ប្រុស"
-                    className="hover:scale-110 transition-transform"
-                  >
-                    <span className="text-base">{char.gender === 'female' ? '👩' : '👨'}</span>
-                  </button>
-                  <span className={char.gender === 'female' ? 'text-pink-300 font-semibold' : 'text-blue-300 font-semibold'}>
-                    {char.name}
-                  </span>
-                </div>
+        {isSpeakersExpanded && (
+          <div className="p-2.5 pt-0 max-h-[220px] overflow-y-auto border-t border-gray-800/50">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-2">
+              {characters.map((char) => (
+                <div
+                  key={char.id}
+                  className={`rounded-xl p-2 border transition-all ${
+                    char.gender === 'female'
+                      ? 'bg-pink-950/20 border-pink-900/40 hover:border-pink-800/60'
+                      : 'bg-blue-950/20 border-blue-900/40 hover:border-blue-800/60'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-1.5 font-medium text-xs">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleSpeakerGender(char.id)}
+                        title="ចុចដើម្បីប្តូរ ស្រី / ប្រុស"
+                        className="hover:scale-110 transition-transform"
+                      >
+                        <span className="text-base">{char.gender === 'female' ? '👩' : '👨'}</span>
+                      </button>
+                      <span className={char.gender === 'female' ? 'text-pink-300 font-semibold' : 'text-blue-300 font-semibold'}>
+                        {char.name}
+                      </span>
+                    </div>
 
-                <div className="flex items-center gap-1 text-[10px]">
-                  {char.voiceSource === 'video' && (
-                    <span className="px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-700/50 flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                      ពីវីដេអូ {char.videoTime && `(${char.videoTime})`}
-                    </span>
+                    <div className="flex items-center gap-1 text-[10px]">
+                      {char.voiceSource === 'video' && (
+                        <span className="px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-700/50 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                          ពីវីដេអូ {char.videoTime && `(${char.videoTime})`}
+                        </span>
+                      )}
+                      {char.voiceSource === 'upload' && (
+                        <span className="px-1.5 py-0.5 rounded bg-blue-950/80 text-blue-300 border border-blue-700/50 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+                          ឯកសារផ្ទាល់
+                        </span>
+                      )}
+                      {char.voiceSource === 'clean_ai' && (
+                        <span className="px-1.5 py-0.5 rounded bg-purple-950/80 text-purple-300 border border-purple-700/50 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+                          AI ស្អាត
+                        </span>
+                      )}
+                      {characters.length > 2 && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteSpeaker(char.id)}
+                          className="text-gray-500 hover:text-red-400 transition p-0.5"
+                          title="លុប Speaker នេះ"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Reference Audio Quote / Prompt Text if available */}
+                  {char.refText && (
+                    <div className="text-[10px] text-gray-400 italic mb-1.5 px-1.5 py-0.5 rounded bg-gray-900/60 truncate" title={char.refText}>
+                      💬 "{char.refText}"
+                    </div>
                   )}
-                  {char.voiceSource === 'upload' && (
-                    <span className="px-1.5 py-0.5 rounded bg-blue-950/80 text-blue-300 border border-blue-700/50 flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
-                      ឯកសារផ្ទាល់
-                    </span>
-                  )}
-                  {char.voiceSource === 'clean_ai' && (
-                    <span className="px-1.5 py-0.5 rounded bg-purple-950/80 text-purple-300 border border-purple-700/50 flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
-                      AI ស្អាត
-                    </span>
-                  )}
-                  {characters.length > 2 && (
+
+                  {/* Action Buttons */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {char.audioPreviewUrl && (
+                      <button
+                        type="button"
+                        onClick={() => char.audioPreviewUrl && playCharAudio(char.id, char.audioPreviewUrl)}
+                        className={`px-2 py-1 rounded-lg text-[11px] font-medium flex items-center gap-1 transition ${
+                          playingCharAudioId === char.id
+                            ? 'bg-amber-600 text-white animate-pulse'
+                            : 'bg-gray-800 hover:bg-gray-700 text-gray-200'
+                        }`}
+                        title="ចុចដើម្បីស្តាប់គំរូសំឡេងតួអង្គ"
+                      >
+                        {playingCharAudioId === char.id ? <Pause size={12} /> : <Play size={12} />}
+                        <span>{playingCharAudioId === char.id ? 'ផ្អាក' : 'ស្តាប់'}</span>
+                      </button>
+                    )}
+
                     <button
                       type="button"
-                      onClick={() => handleDeleteSpeaker(char.id)}
-                      className="text-gray-500 hover:text-red-400 transition p-0.5"
-                      title="លុប Speaker នេះ"
+                      disabled={extractingCharId === char.id || !serverVideoFileId}
+                      onClick={() => handleExtractFromVideo(char.id)}
+                      className={`px-2 py-1 rounded-lg text-[11px] font-medium flex items-center gap-1 transition ${
+                        extractingCharId === char.id
+                          ? 'bg-gray-800 text-gray-500 cursor-wait'
+                          : char.gender === 'female'
+                            ? 'bg-pink-900/50 hover:bg-pink-800/80 text-pink-200 border border-pink-700/40'
+                            : 'bg-blue-900/50 hover:bg-blue-800/80 text-blue-200 border border-blue-700/40'
+                      }`}
+                      title="កាត់សំឡេងតួអង្គ 4 វិនាទី ពីវិនាទីវីដេអូបច្ចុប្បន្ន"
                     >
-                      <Trash2 size={12} />
+                      {extractingCharId === char.id ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <Scissors size={12} />
+                      )}
+                      <span>{extractingCharId === char.id ? 'កំពុងកាត់...' : '✂️ កាត់ពីវីដេអូ'}</span>
                     </button>
-                  )}
+
+                    <button
+                      type="button"
+                      onClick={() => fileInputRefs.current[char.id]?.click()}
+                      className="px-2 py-1 rounded-lg text-[11px] font-medium bg-gray-800/80 hover:bg-gray-700 text-gray-300 border border-gray-700/40 flex items-center gap-1 transition"
+                      title="Upload ឯកសារសំឡេង MP3/WAV របស់តួអង្គ"
+                    >
+                      <Upload size={12} />
+                      <span>Upload</span>
+                    </button>
+                    <input
+                      type="file"
+                      accept="audio/*,video/*"
+                      ref={(el) => { fileInputRefs.current[char.id] = el; }}
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) handleUploadVoiceFile(char.id, f);
+                      }}
+                    />
+
+                    {char.voiceSource !== 'clean_ai' && (
+                      <button
+                        type="button"
+                        onClick={() => handleSetCleanAI(char.id)}
+                        className="px-1.5 py-1 rounded-lg text-[10px] text-gray-400 hover:text-purple-300 hover:bg-purple-950/40 transition flex items-center gap-1 ml-auto"
+                        title="ប្រើសំឡេង AI ស្អាតជំនួសវិញ (មិនបាច់មាន BGM)"
+                      >
+                        <Sparkles size={11} />
+                        <span>AI ស្អាត</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-
-              {/* Reference Audio Quote / Prompt Text if available */}
-              {char.refText && (
-                <div className="text-[10px] text-gray-400 italic mb-2 px-1.5 py-0.5 rounded bg-gray-900/60 truncate" title={char.refText}>
-                  💬 "{char.refText}"
-                </div>
-              )}
-
-              {/* Action Buttons */}
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {char.audioPreviewUrl && (
-                  <button
-                    type="button"
-                    onClick={() => char.audioPreviewUrl && playCharAudio(char.id, char.audioPreviewUrl)}
-                    className={`px-2 py-1 rounded-lg text-[11px] font-medium flex items-center gap-1 transition ${
-                      playingCharAudioId === char.id
-                        ? 'bg-amber-600 text-white animate-pulse'
-                        : 'bg-gray-800 hover:bg-gray-700 text-gray-200'
-                    }`}
-                    title="ចុចដើម្បីស្តាប់គំរូសំឡេងតួអង្គ"
-                  >
-                    {playingCharAudioId === char.id ? <Pause size={12} /> : <Play size={12} />}
-                    <span>{playingCharAudioId === char.id ? 'ផ្អាក' : 'ស្តាប់គំរូ'}</span>
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  disabled={extractingCharId === char.id || !serverVideoFileId}
-                  onClick={() => handleExtractFromVideo(char.id)}
-                  className={`px-2 py-1 rounded-lg text-[11px] font-medium flex items-center gap-1 transition ${
-                    extractingCharId === char.id
-                      ? 'bg-gray-800 text-gray-500 cursor-wait'
-                      : char.gender === 'female'
-                        ? 'bg-pink-900/50 hover:bg-pink-800/80 text-pink-200 border border-pink-700/40'
-                        : 'bg-blue-900/50 hover:bg-blue-800/80 text-blue-200 border border-blue-700/40'
-                  }`}
-                  title="កាត់សំឡេងតួអង្គ 4 វិនាទី ពីវិនាទីវីដេអូបច្ចុប្បន្ន"
-                >
-                  {extractingCharId === char.id ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    <Scissors size={12} />
-                  )}
-                  <span>{extractingCharId === char.id ? 'កំពុងកាត់...' : '✂️ កាត់ពីវីដេអូ'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => fileInputRefs.current[char.id]?.click()}
-                  className="px-2 py-1 rounded-lg text-[11px] font-medium bg-gray-800/80 hover:bg-gray-700 text-gray-300 border border-gray-700/40 flex items-center gap-1 transition"
-                  title="Upload ឯកសារសំឡេង MP3/WAV របស់តួអង្គ"
-                >
-                  <Upload size={12} />
-                  <span>Upload</span>
-                </button>
-                <input
-                  type="file"
-                  accept="audio/*,video/*"
-                  ref={(el) => { fileInputRefs.current[char.id] = el; }}
-                  className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) handleUploadVoiceFile(char.id, f);
-                  }}
-                />
-
-                {char.voiceSource !== 'clean_ai' && (
-                  <button
-                    type="button"
-                    onClick={() => handleSetCleanAI(char.id)}
-                    className="px-1.5 py-1 rounded-lg text-[10px] text-gray-400 hover:text-purple-300 hover:bg-purple-950/40 transition flex items-center gap-1 ml-auto"
-                    title="ប្រើសំឡេង AI ស្អាតជំនួសវិញ (មិនបាច់មាន BGM)"
-                  >
-                    <Sparkles size={11} />
-                    <span>AI ស្អាត</span>
-                  </button>
-                )}
-              </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Subtitle List Header */}
@@ -1117,15 +1134,15 @@ const videoRef = useRef<HTMLVideoElement>(null);
       </div>
 
       {/* Subtitle Lines Area */}
-      <div className="flex-1 overflow-y-auto p-4 relative bg-[#0f0f13]">
+      <div className="flex-1 overflow-y-auto p-3 relative bg-[#0f0f13] min-h-0">
         {lines.length === 0 && !isTranscribing && (
-          <div className="h-full flex flex-col items-center justify-center text-center px-8 animate-in fade-in duration-500">
-            <div className="w-20 h-20 bg-gray-900/50 rounded-3xl flex items-center justify-center border border-gray-800 mb-5">
-              <FileAudio size={32} className="text-gray-500" />
+          <div className="h-full min-h-[110px] flex flex-col items-center justify-center text-center px-4 py-3 animate-in fade-in duration-300">
+            <div className="w-10 h-10 bg-gray-900/60 rounded-xl flex items-center justify-center border border-gray-800 mb-2 text-pink-400 shadow-inner">
+              <Sparkles size={20} />
             </div>
-            <h3 className="text-lg font-bold mb-3 text-gray-200">No lines yet</h3>
-            <p className="text-sm text-gray-500 leading-relaxed max-w-[250px]">
-              Transcribe the video to build them automatically, or import a .srt / .vtt you already have.
+            <h3 className="text-xs sm:text-sm font-bold mb-0.5 text-gray-200">ត្រៀមរួចរាល់សម្រាប់ការបកប្រែ</h3>
+            <p className="text-[11px] text-gray-500 leading-relaxed max-w-[260px]">
+              ចុចប៊ូតុង <span className="text-pink-400 font-semibold">MAGIC PROCESS</span> ខាងក្រោមដើម្បីចាប់ផ្តើមបកប្រែ និងបញ្ចូលសំឡេង
             </p>
           </div>
         )}
@@ -1497,33 +1514,39 @@ const videoRef = useRef<HTMLVideoElement>(null);
       </div>
 
       {/* Bottom Action Bar */}
-      <div className="bg-gray-950/90 backdrop-blur-md p-4 border-t border-gray-900 shrink-0 pb-6 z-20">
-  <button
-    onClick={handleMagicProcess}
-    disabled={!videoFile || isTranscribing || isExporting || ttsBatchProgress.active}
-    className={`w-full flex items-center justify-center gap-3 py-4 px-5 rounded-2xl border transition-all ${
-      videoFile && !isTranscribing && !isExporting && !ttsBatchProgress.active
-        ? 'bg-gradient-to-r from-pink-600 via-purple-600 to-indigo-600 text-white border-purple-400/30 hover:scale-[1.01] shadow-[0_0_25px_rgba(139,92,246,0.25)]'
-        : 'bg-gray-900/50 text-gray-600 border-gray-800 cursor-not-allowed'
-    }`}
-  >
-    {isTranscribing || isExporting || ttsBatchProgress.active ? (
-  <div className="relative flex items-center w-full h-12 overflow-hidden">
-      <span
-        className="absolute left-0 text-[30px] select-none"
-        style={{
-          animation: "magicButtonTurtle 7s ease-in-out infinite",
-          filter: "drop-shadow(0 0 5px rgba(34,197,94,0.55))",
-        }}
-      >
-        🐢
-      </span>
-    </div>
-) : (
-  <span className="text-2xl">✨</span>
-)}
-  </button>
-</div>
+      <div className="bg-gray-950/95 backdrop-blur-md p-3 pb-4 sm:pb-5 border-t border-gray-900 shrink-0 z-30 shadow-[0_-10px_25px_rgba(0,0,0,0.5)]">
+        <button
+          onClick={handleMagicProcess}
+          disabled={!videoFile || isTranscribing || isExporting || ttsBatchProgress.active}
+          className={`w-full flex items-center justify-center gap-2.5 py-3.5 px-4 rounded-2xl border transition-all ${
+            videoFile && !isTranscribing && !isExporting && !ttsBatchProgress.active
+              ? 'bg-gradient-to-r from-pink-600 via-purple-600 to-indigo-600 text-white border-purple-400/30 hover:scale-[1.01] shadow-[0_0_25px_rgba(139,92,246,0.35)] cursor-pointer active:scale-95'
+              : 'bg-gray-900/50 text-gray-600 border-gray-800 cursor-not-allowed'
+          }`}
+        >
+          {isTranscribing || isExporting || ttsBatchProgress.active ? (
+            <div className="relative flex items-center w-full h-10 overflow-hidden">
+              <span
+                className="absolute left-0 text-[26px] select-none"
+                style={{
+                  animation: "magicButtonTurtle 7s ease-in-out infinite",
+                  filter: "drop-shadow(0 0 5px rgba(34,197,94,0.55))",
+                }}
+              >
+                🐢
+              </span>
+              <span className="w-full text-center text-xs font-semibold text-purple-200">
+                {isTranscribing ? 'កំពុងបកប្រែ...' : ttsBatchProgress.active ? `កំពុងបញ្ចូលសំឡេង (${ttsBatchProgress.current}/${ttsBatchProgress.total})...` : 'កំពុង Export វីដេអូ...'}
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center gap-2 font-bold text-xs sm:text-sm tracking-wide">
+              <Sparkles size={16} className="text-yellow-300 animate-pulse shrink-0" />
+              <span className="truncate">{lines.length > 0 && lines.every(l => l.audioUrl) ? '✨ នាំចេញវីដេអូ (EXPORT VIDEO)' : '✨ ចាប់ផ្តើមបកប្រែ & បញ្ចូលសំឡេង (MAGIC PROCESS)'}</span>
+            </div>
+          )}
+        </button>
+      </div>
     </div>
   );
 }
