@@ -87,12 +87,32 @@ async def clone_voice_json(req: CloneRequest):
         print(f"[VoxCPM2] Warning: Reference path '{ref_path}' not found, falling back to unconditioned voice", flush=True)
         ref_path = None
 
+    if ref_path and os.path.exists(ref_path):
+        try:
+            ref_data, ref_sr = sf.read(ref_path)
+            ref_max = float(np.abs(ref_data).max()) if len(ref_data) > 0 else 0.0
+            if ref_max < 0.02:
+                print(f"[VoxCPM2] Warning: Reference audio is near silent (peak={ref_max:.4f}), ignoring reference", flush=True)
+                ref_path = None
+            elif ref_max < 0.7:
+                # Boost reference audio so VoxCPM2 can clearly hear the speaker's vocal formants
+                boosted = ref_data * (0.85 / max(ref_max, 1e-4))
+                sf.write(ref_path, boosted, ref_sr)
+                print(f"[VoxCPM2] Boosted reference audio peak from {ref_max:.3f} to 0.85", flush=True)
+        except Exception as e:
+            print(f"[VoxCPM2] Error checking/normalizing reference audio: {e}", flush=True)
+
     uid = uuid.uuid4().hex
     tmp_wav = os.path.join(tempfile.gettempdir(), f"voxcpm_{uid}.wav")
     tmp_mp3 = os.path.join(tempfile.gettempdir(), f"voxcpm_{uid}.mp3")
 
     cfg_val = req.cfg_value if req.cfg_value is not None else 1.0
     steps = req.inference_timesteps if req.inference_timesteps is not None else 3
+
+    text_clean = req.text.strip()
+    # Estimate reasonable max token budget to prevent endless generation loops and 220s hangs
+    max_audio_sec = max(3.5, min(14.0, len(text_clean) * 0.35 + 3.0))
+    max_tokens = int(max_audio_sec * 6.25) + 6
 
     try:
         async with model_lock:
@@ -101,9 +121,11 @@ async def clone_voice_json(req: CloneRequest):
             
             def _run_inference():
                 kwargs = {
-                    "text": req.text.strip(),
+                    "text": text_clean,
                     "cfg_value": cfg_val,
                     "inference_timesteps": steps,
+                    "retry_badcase": False,
+                    "max_len": max_tokens,
                 }
                 if ref_path:
                     kwargs["reference_wav_path"] = ref_path
@@ -114,6 +136,12 @@ async def clone_voice_json(req: CloneRequest):
             elapsed = time.time() - t0
 
         sample_rate = getattr(m.tts_model, "sample_rate", 48000)
+        
+        # Normalize output speech to peak 0.89 (-1.0 dB) so speech is loud, clear, and never quiet or hissy
+        max_amp = float(np.abs(wav).max()) if len(wav) > 0 else 0.0
+        if max_amp > 1e-4:
+            wav = wav * (0.89 / max_amp)
+
         duration = len(wav) / sample_rate
         print(f"[VoxCPM2] Generated {duration:.2f}s audio for text '{req.text[:30]}...' in {elapsed:.2f}s (ref: {bool(ref_path)}, steps={steps}, cfg={cfg_val})", flush=True)
 

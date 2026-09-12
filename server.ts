@@ -597,36 +597,75 @@ async function extractMasterVoice(
   try {
     if (!fs.existsSync(filePath)) return null;
 
-    // Pick the best subtitle segment with clear dialogue (duration 2.5s to 7s)
-    let bestLine = lines.find((l) => {
-      const s = parseTimestamp(l.start);
-      const e = parseTimestamp(l.end);
-      if (s === null || e === null) return false;
-      const d = e - s;
-      return d >= 2.5 && d <= 7.0;
-    }) || lines[0];
+    // Filter candidate lines with duration between 2.0s and 8.0s
+    const validCandidates = lines
+      .map((l) => {
+        const s = parseTimestamp(l.start);
+        const e = parseTimestamp(l.end);
+        if (s === null || e === null || e <= s) return null;
+        return { start: s, end: e, duration: e - s, text: l.text };
+      })
+      .filter((c): c is { start: number; end: number; duration: number; text: string } => c !== null && c.duration >= 2.0)
+      .slice(0, 10);
 
-    let refStart = 1.0;
-    let refDur = 5.0;
-    if (bestLine) {
-      const s = parseTimestamp(bestLine.start);
-      const e = parseTimestamp(bestLine.end);
-      if (s !== null && s >= 0) {
-        refStart = Math.max(0, s);
-        if (e !== null && e > refStart) {
-          refDur = Math.min(6.0, Math.max(3.0, e - refStart));
+    const masterPath = path.join(os.tmpdir(), `master_ref_${fileId}.wav`);
+
+    let bestCandidate: { start: number; dur: number } | null = null;
+    let highestPeak = -999;
+
+    if (validCandidates.length === 0) {
+      validCandidates.push({ start: 1.0, end: 6.0, duration: 5.0, text: '' });
+    }
+
+    // Test candidates to find the segment with the strongest audible vocal energy
+    for (const cand of validCandidates) {
+      const testStart = Math.max(0, cand.start);
+      const testDur = Math.min(5.5, Math.max(2.5, cand.duration));
+      const testTmp = path.join(os.tmpdir(), `test_cand_${crypto.randomUUID()}.wav`);
+      try {
+        await execAsync(
+          `ffmpeg -hide_banner -loglevel error -y -ss ${testStart.toFixed(2)} -t ${testDur.toFixed(2)} -i "${filePath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${testTmp}"`
+        );
+        if (fs.existsSync(testTmp) && fs.statSync(testTmp).size > 2000) {
+          const { stdout, stderr } = await execAsync(
+            `ffmpeg -hide_banner -i "${testTmp}" -af "volumedetect" -f null -`
+          );
+          const out = (stderr || '') + (stdout || '');
+          const maxMatch = out.match(/max_volume:\s*(-?[\d.]+)\s*dB/);
+          const maxVol = maxMatch ? parseFloat(maxMatch[1]) : -99;
+          
+          if (maxVol > highestPeak) {
+            highestPeak = maxVol;
+            bestCandidate = { start: testStart, dur: testDur };
+          }
+          // If we found a segment with strong dialogue (max_volume > -12 dB), it's ideal
+          if (maxVol > -12) {
+            try { fs.unlinkSync(testTmp); } catch(e) {}
+            break;
+          }
+        }
+      } catch (err) {
+        // ignore probe error for this candidate
+      } finally {
+        if (fs.existsSync(testTmp)) {
+          try { fs.unlinkSync(testTmp); } catch(e) {}
         }
       }
     }
 
-    const masterPath = path.join(os.tmpdir(), `master_ref_${fileId}.wav`);
+    const finalStart = bestCandidate ? bestCandidate.start : 1.0;
+    const finalDur = bestCandidate ? bestCandidate.dur : 5.0;
+
+    // Extract with loudnorm so vocal levels are normalized to studio quality (-16 LUFS, -1.5 dB peak)
+    // and silenceremove trims leading/trailing silence
     await execAsync(
-      `ffmpeg -hide_banner -loglevel error -y -ss ${refStart.toFixed(2)} -t ${refDur.toFixed(2)} -i "${filePath}" -vn -af "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-35dB" -acodec pcm_s16le -ar 16000 -ac 1 "${masterPath}"`
+      `ffmpeg -hide_banner -loglevel error -y -ss ${finalStart.toFixed(2)} -t ${finalDur.toFixed(2)} -i "${filePath}" -vn -af "loudnorm=I=-16:TP=-1.5:LRA=11,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-40dB" -acodec pcm_s16le -ar 16000 -ac 1 "${masterPath}"`
     );
+
     if (fs.existsSync(masterPath) && fs.statSync(masterPath).size > 1500) {
       const b64 = fs.readFileSync(masterPath).toString('base64');
       masterVoiceCache.set(fileId, b64);
-      console.log(`[MASTER VOICE] Extracted master reference voice for ${fileId} at ${refStart.toFixed(2)}s (dur=${refDur.toFixed(2)}s, size=${fs.statSync(masterPath).size} bytes)`);
+      console.log(`[MASTER VOICE] Extracted high-fidelity master voice for ${fileId} at ${finalStart.toFixed(2)}s (dur=${finalDur.toFixed(2)}s, peak=${highestPeak.toFixed(1)}dB, size=${fs.statSync(masterPath).size} bytes)`);
       return b64;
     }
   } catch (err) {
@@ -1356,7 +1395,7 @@ app.post('/api/tts', async (req, res) => {
 
             try {
               await execAsync(
-                `ffmpeg -hide_banner -loglevel error -y -ss ${sStart.toFixed(2)} -t ${sDur.toFixed(2)} -i "${videoPath}" -vn -af "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-35dB" -acodec pcm_s16le -ar 16000 -ac 1 "${tempRefFile}"`
+                `ffmpeg -hide_banner -loglevel error -y -ss ${sStart.toFixed(2)} -t ${sDur.toFixed(2)} -i "${videoPath}" -vn -af "loudnorm=I=-16:TP=-1.5:LRA=11,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-40dB" -acodec pcm_s16le -ar 16000 -ac 1 "${tempRefFile}"`
               );
               if (fs.existsSync(tempRefFile) && fs.statSync(tempRefFile).size > 1500) {
                 refBase64 = fs.readFileSync(tempRefFile).toString('base64');
