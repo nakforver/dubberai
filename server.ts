@@ -210,6 +210,7 @@ type SubtitleLine = {
   start: string;
   end: string;
   text: string;
+  gender?: 'female' | 'male';
 };
 
 function parseTimestamp(value: string | number | undefined): number | null {
@@ -302,11 +303,20 @@ function validateSubtitleLine(value: any, index: number): SubtitleLine {
       `start=${String(value.start)} end=${String(value.end)}`
     );
   }
+  const rawGender = typeof value.gender === 'string' ? value.gender.toLowerCase().trim() : '';
+  let gender: 'female' | 'male' | undefined = undefined;
+  if (rawGender.includes('female') || rawGender.includes('woman') || rawGender.includes('girl') || rawGender.includes('ស្រី')) {
+    gender = 'female';
+  } else if (rawGender.includes('male') || rawGender.includes('man') || rawGender.includes('boy') || rawGender.includes('ប្រុស')) {
+    gender = 'male';
+  }
+
   return {
     id,
     start: String(value.start),
     end: String(value.end),
-    text: value.text.trim()
+    text: value.text.trim(),
+    ...(gender ? { gender } : {})
   };
 }
 
@@ -386,7 +396,8 @@ function mergeTranslatedSubtitleLine(
     id: originalLine.id,
     start: originalLine.start,
     end: originalLine.end,
-    text
+    text,
+    ...(originalLine.gender ? { gender: originalLine.gender } : {})
   };
 }
 
@@ -1188,9 +1199,10 @@ TRANSCRIPTION AND SEGMENTATION RULES:
 10. Continue processing until the END of the audio/video.
 11. If there are pauses or silence, do not invent dialogue during silence.
 12. If multiple people speak, preserve the chronological sequence of their speech.
-13. ALL subtitle text must be translated into natural Khmer (Cambodian).
-14. Do NOT output the original-language transcript.
-15. Do NOT summarize.
+13. For each spoken dialogue, determine the speaker's vocal gender as "female" or "male".
+14. ALL subtitle text must be translated into natural Khmer (Cambodian).
+15. Do NOT output the original-language transcript.
+16. Do NOT summarize.
 
 IMPORTANT:
 The video may be several minutes long. Do NOT reduce the entire video to a small number of subtitle entries simply to save tokens. Produce as many accurate subtitle segments as reasonably possible.
@@ -1198,7 +1210,7 @@ The video may be several minutes long. Do NOT reduce the entire video to a small
 OUTPUT:
 Return ONLY a valid JSON array.
 Each object MUST use exactly this schema:
-{ id: string, start: string, end: string, text: string }
+{ id: string, start: string, end: string, text: string, gender: "female" | "male" }
 
 Use timestamp format M:SS.S or MM:SS.S.
 IDs must be sequential: 1, 2, 3, 4, ...
@@ -1218,7 +1230,8 @@ Do not output an empty array unless there is absolutely no speech.` },
                     id: { type: Type.STRING },
                     start: { type: Type.STRING },
                     end: { type: Type.STRING },
-                    text: { type: Type.STRING }
+                    text: { type: Type.STRING },
+                    gender: { type: Type.STRING }
                   },
                   required: ["id", "start", "end", "text"]
                 }
@@ -1348,7 +1361,7 @@ app.get('/api/transcribe/status', (req, res) => {
 
 app.post('/api/tts', async (req, res) => {
   try {
-    const { text, voice, fileId, startTime, endTime, start, end, referenceAudioBase64 } = req.body;
+    const { text, voice, fileId, startTime, endTime, start, end, gender, referenceAudioBase64 } = req.body;
     if (typeof text !== 'string' || text.trim().length === 0) {
       return res.status(400).json({ error: 'TTS text is required' });
     }
@@ -1356,20 +1369,14 @@ app.post('/api/tts', async (req, res) => {
     if (voice === 'VoxCPM2') {
       let tempRefFile: string | null = null;
       try {
-        let refBase64: string | null = (typeof referenceAudioBase64 === 'string' && referenceAudioBase64.length > 500)
-          ? referenceAudioBase64
-          : null;
+        let refBase64: string | null = null;
 
-        // 1. Fallback to cached master voice for this fileId
-        if (!refBase64 && fileId && masterVoiceCache.has(fileId)) {
-          refBase64 = masterVoiceCache.get(fileId) || null;
-        }
-
-        // 2. Fallback to extracting from video if uploaded video file exists on disk
-        if (!refBase64 && fileId) {
+        // Priority 1: Extract the speaker voice for THIS SPECIFIC LINE from original video at [start, end]
+        // This ensures female characters get their female voices cloned, and male characters get their male voices cloned!
+        if (fileId && (start !== undefined || startTime !== undefined)) {
           let videoPath = path.join(os.tmpdir(), `upload_${fileId}`);
           if (!fs.existsSync(videoPath)) {
-            // Check if there are chunk files
+            // Check if there are chunk files and assemble
             const part0 = path.join(os.tmpdir(), `upload_${fileId}_part_0`);
             if (fs.existsSync(part0)) {
               let i = 0;
@@ -1390,21 +1397,41 @@ app.post('/api/tts', async (req, res) => {
             const parsedStart = typeof rawStart === 'number' ? rawStart : parseTimestamp(rawStart);
             const parsedEnd = typeof rawEnd === 'number' ? rawEnd : parseTimestamp(rawEnd);
 
-            const sStart = (parsedStart !== null && parsedStart >= 0) ? Math.max(0, parsedStart) : 1.0;
-            const sDur = (parsedEnd !== null && parsedEnd > sStart) ? Math.min(6.0, Math.max(3.0, parsedEnd - sStart)) : 5.0;
-
-            try {
-              await execAsync(
-                `ffmpeg -hide_banner -loglevel error -y -ss ${sStart.toFixed(2)} -t ${sDur.toFixed(2)} -i "${videoPath}" -vn -af "loudnorm=I=-16:TP=-1.5:LRA=11,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-40dB" -acodec pcm_s16le -ar 16000 -ac 1 "${tempRefFile}"`
-              );
-              if (fs.existsSync(tempRefFile) && fs.statSync(tempRefFile).size > 1500) {
-                refBase64 = fs.readFileSync(tempRefFile).toString('base64');
-                masterVoiceCache.set(fileId, refBase64);
+            if (parsedStart !== null && parsedStart >= 0) {
+              const lineDur = (parsedEnd !== null && parsedEnd > parsedStart) ? (parsedEnd - parsedStart) : 3.0;
+              // Target ~3.2s to 5.5s so VoxCPM2 captures sufficient speaker vocal timbre
+              let sStart = parsedStart;
+              let sDur = lineDur;
+              if (lineDur < 3.2) {
+                const padBefore = Math.min(parsedStart, 0.6);
+                sStart = Math.max(0, parsedStart - padBefore);
+                sDur = Math.max(3.2, lineDur + padBefore + 1.2);
+              } else if (lineDur > 6.0) {
+                sDur = 6.0;
               }
-            } catch (err) {
-              console.warn('[TTS VoxCPM2] Failed to slice reference audio from video:', err);
+
+              try {
+                // Use clean loudnorm without silenceremove so vocal audio is never dropped
+                await execAsync(
+                  `ffmpeg -hide_banner -loglevel error -y -ss ${sStart.toFixed(2)} -t ${sDur.toFixed(2)} -i "${videoPath}" -vn -af "loudnorm=I=-16:TP=-1.5:LRA=11" -acodec pcm_s16le -ar 16000 -ac 1 "${tempRefFile}"`
+                );
+                if (fs.existsSync(tempRefFile) && fs.statSync(tempRefFile).size > 4000) {
+                  refBase64 = fs.readFileSync(tempRefFile).toString('base64');
+                  console.log(`[TTS VoxCPM2] Extracted line speaker audio (${rawStart} - ${rawEnd}) at ${sStart.toFixed(2)}s (dur: ${sDur.toFixed(2)}s, size: ${fs.statSync(tempRefFile).size}B)`);
+                }
+              } catch (err) {
+                console.warn('[TTS VoxCPM2] Failed to slice speaker audio from video:', err);
+              }
             }
           }
+        }
+
+        // Priority 2: Fallback to client provided reference or master voice if line-specific slice was unavailable
+        if (!refBase64 && typeof referenceAudioBase64 === 'string' && referenceAudioBase64.length > 500) {
+          refBase64 = referenceAudioBase64;
+        }
+        if (!refBase64 && fileId && masterVoiceCache.has(fileId)) {
+          refBase64 = masterVoiceCache.get(fileId) || null;
         }
 
         let voxcpmBaseUrl = process.env.VOXCPM_API_URL;
@@ -1412,12 +1439,15 @@ app.post('/api/tts', async (req, res) => {
           voxcpmBaseUrl = process.env.RENDER ? 'http://54.254.244.148/voxcpm' : 'http://127.0.0.1:5005';
         }
 
-        const payload = {
+        const payload: any = {
           text,
           reference_audio_base64: refBase64,
           inference_timesteps: 6,
           cfg_value: 2.0
         };
+        if (gender) {
+          payload.gender = gender;
+        }
 
         let response: any;
         try {
@@ -1467,7 +1497,7 @@ app.post('/api/tts', async (req, res) => {
       }
     }
     
-    const targetVoice = voice === 'Sreymom' ? 'km-KH-SreymomNeural' : 'km-KH-PisethNeural';
+    const targetVoice = (gender === 'female' || (!gender && voice === 'Sreymom')) ? 'km-KH-SreymomNeural' : 'km-KH-PisethNeural';
     
     const tts = new EdgeTTS({ voice: targetVoice, lang: 'km-KH' });
     

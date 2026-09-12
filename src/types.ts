@@ -7,6 +7,7 @@ export interface SubtitleLine {
   generated: boolean;
   audioUrl?: string;
   audioDuration?: number;
+  gender?: 'female' | 'male';
 }
 
 export type ViewState = 'home' | 'editor' | 'settings';

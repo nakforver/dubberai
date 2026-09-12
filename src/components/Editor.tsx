@@ -207,10 +207,11 @@ const videoRef = useRef<HTMLVideoElement>(null);
           const newLines = job.lines.map((l: any, idx: number) => ({
             ...l,
             id: l.id || `line-${Date.now()}-${idx}`,
+            gender: l.gender ? (String(l.gender).toLowerCase().includes('female') ? 'female' : 'male') : (idx % 2 === 0 ? 'female' : 'male'),
             selected: true,
             generated: false,
             audioUrl: null,
-          audioDuration: undefined
+            audioDuration: undefined
           }));
           setLines(newLines);
           // Keep ref synchronized immediately for MAGIC PROCESS.
@@ -272,6 +273,7 @@ const videoRef = useRef<HTMLVideoElement>(null);
           end: currentLine?.end,
           startTime: currentLine?.start,
           endTime: currentLine?.end,
+          gender: currentLine?.gender || 'female',
           referenceAudioBase64: masterVoiceRef.current
         })
       });
@@ -1047,9 +1049,23 @@ const videoRef = useRef<HTMLVideoElement>(null);
                     <span className="font-mono tracking-tighter">{line.start} - {line.end}</span>
                   </div>
                   <div className="flex items-center gap-2">
-                      <div className="w-5 h-5 rounded bg-gray-800/80 flex items-center justify-center text-blue-400">
-                        <span className="text-[10px]">{voice === 'Piseth' ? '♂' : voice === 'Sreymom' ? '♀' : '🎙️'}</span>
-                      </div>
+                    <button
+                      type="button"
+                      title="ចុចដើម្បីប្តូរសំឡេង (ស្រី / ប្រុស)"
+                      onClick={() => {
+                        const nextGender = (line.gender === 'female') ? 'male' : 'female';
+                        const updated = lines.map(l => l.id === line.id ? { ...l, gender: nextGender, generated: false, audioUrl: undefined } : l);
+                        setLines(updated);
+                        linesRef.current = updated;
+                      }}
+                      className={`px-2 py-0.5 rounded text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition ${
+                        line.gender === 'female'
+                          ? 'bg-pink-950/70 text-pink-300 border border-pink-700/50 hover:bg-pink-900/80'
+                          : 'bg-blue-950/70 text-blue-300 border border-blue-700/50 hover:bg-blue-900/80'
+                      }`}
+                    >
+                      {line.gender === 'female' ? '👩 ស្រី' : '👨 ប្រុស'}
+                    </button>
                   </div>
                 </div>
                 <textarea 

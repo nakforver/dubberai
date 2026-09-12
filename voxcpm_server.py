@@ -59,6 +59,7 @@ class CloneRequest(BaseModel):
     text: str
     reference_wav_path: Optional[str] = None
     reference_audio_base64: Optional[str] = None
+    gender: Optional[str] = None
     cfg_value: Optional[float] = 2.0
     inference_timesteps: Optional[int] = 6
 
@@ -109,11 +110,25 @@ async def clone_voice_json(req: CloneRequest):
 
     text_clean = req.text.strip()
 
-    # For Khmer unicode text, VoxCPM2 requires the prompt style prefix '(Khmer language) '
-    # so that the underlying MiniCPM-4 model activates Khmer phonetic synthesis instead of drifting.
+    # Determine gender style guidance if provided
+    gender_desc = ""
+    if req.gender:
+        g = str(req.gender).lower().strip()
+        if any(w in g for w in ("female", "woman", "girl", "ស្រី")):
+            gender_desc = ", female voice"
+        elif any(w in g for w in ("male", "man", "boy", "ប្រុស")):
+            gender_desc = ", male voice"
+
+    # For Khmer unicode text, VoxCPM2 requires prompt style prefix '(Khmer language...)'
+    # so that the underlying MiniCPM-4 model activates Khmer phonetic synthesis with correct vocal gender.
     is_khmer = bool(re.search(r'[\u1780-\u17ff]', text_clean))
-    if is_khmer and not text_clean.startswith("("):
-        text_to_synthesize = f"(Khmer language) {text_clean}"
+    if not text_clean.startswith("("):
+        if is_khmer:
+            text_to_synthesize = f"(Khmer language{gender_desc}) {text_clean}"
+        elif gender_desc:
+            text_to_synthesize = f"({gender_desc.lstrip(', ')}) {text_clean}"
+        else:
+            text_to_synthesize = text_clean
     else:
         text_to_synthesize = text_clean
 
